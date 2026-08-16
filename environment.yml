@@ -1,0 +1,18 @@
+# One-shot environment setup, including rclone itself (not a pip package,
+# so it can't live in requirements.txt - conda-forge ships it as a regular
+# binary package, which is the whole point of using conda/mamba here).
+#
+# Usage:
+#   mamba env create -f environment.yml   (or: conda env create -f environment.yml)
+#   conda activate rtkdashboard
+#   python app.py
+name: rtk
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - flask=3.1.0
+  - tzdata  # conda-forge versions this by IANA release (e.g. 2026c), not
+            # PyPI's dotted scheme - unpinned, always want the latest DB.
+  - rclone
+  - python-dotenv  # loads .env (see .env.example) - config.py's load_dotenv()

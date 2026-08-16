@@ -1,0 +1,657 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>rtkdashboard - compare {{ hostname_a }} vs {{ hostname_b }}</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2"></script>
+<style>
+  body { font-family: -apple-system, "Segoe UI", sans-serif; margin: 24px; background: #fafafa; color: #1c1917; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .sub { color: #6b7280; margin-bottom: 16px; }
+  .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; display: flex; flex-direction: column; }
+  .card h2 { font-size: 14px; margin: 0 0 12px; color: #374151; }
+  .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .card-header h2 { margin: 0; }
+  .chart-wrap { position: relative; flex: 1 1 auto; min-height: 0; height: 78vh; }
+  .chart-wrap canvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
+  .empty-state { color: #9ca3af; font-size: 13px; text-align: center; padding: 32px 0; }
+  button, select { padding: 6px 14px; border-radius: 6px; border: 1px solid #d1d5db; background: #fff; cursor: pointer; font-size: 14px; }
+  button:hover { background: #f3f4f6; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .hint { font-size: 12px; color: #9ca3af; margin-top: 8px; }
+  a { color: #2563eb; }
+  .filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 20px; padding: 12px; margin-bottom: 12px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; }
+  .filter-group { display: flex; flex-direction: column; gap: 4px; }
+  .filter-group label { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.03em; }
+  .filter-group .row { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .filter-group select[multiple] { min-width: 160px; font-size: 13px; }
+  .filter-group input[type=number] { width: 64px; padding: 4px 6px; border-radius: 6px; border: 1px solid #d1d5db; }
+  .modal-overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45); display: flex; align-items: center; justify-content: center; z-index: 100; }
+  .modal-overlay[hidden] { display: none; }
+  .modal-box { background: #fff; border-radius: 8px; padding: 16px; width: min(720px, 92vw); max-height: 88vh; overflow-y: auto; }
+  .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .modal-header h3 { margin: 0; font-size: 14px; }
+  .modal-chart-wrap { position: relative; height: 220px; margin-top: 12px; }
+  .modal-chart-wrap canvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
+</style>
+</head>
+<body>
+  <h1>Compare stations: {{ hostname_a }} vs {{ hostname_b }}</h1>
+  <div class="sub">
+    GNSS-IR reflector height only - see <a href="{{ url_for('dashboard', station=hostname_a, days=days) }}">{{ hostname_a }}</a>
+    or <a href="{{ url_for('dashboard', station=hostname_b, days=days) }}">{{ hostname_b }}</a> for the full per-station dashboard.
+    All times shown in {{ display_tz }}.
+    Latest synced data: {{ hostname_a }}: {{ latest_data_t_display_a or "none yet" }},
+    {{ hostname_b }}: {{ latest_data_t_display_b or "none yet" }}.
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2>Reflector Height (gnssrefl) - shared time axis</h2>
+      <div>
+        <label style="font-size: 13px; margin-right: 8px;">
+          <input type="checkbox" id="crosshair-toggle" style="vertical-align: middle;"> Crosshair (compare smoothed values)
+        </label>
+        <button type="button" onclick="compareChart.resetZoom()" {{ "disabled" if not (gnss_quality_series_a or gnss_quality_series_b) }}>Reset zoom</button>
+        <button type="button" onclick="exportCompareCsv()" {{ "disabled" if not (gnss_quality_series_a or gnss_quality_series_b) }}>Export CSV</button>
+      </div>
+    </div>
+    {% if gnss_quality_series_a or gnss_quality_series_b %}
+    <div class="filters">
+      <div class="filter-group">
+        <label>Constellation</label>
+        <select id="filter-constellation"></select>
+      </div>
+      <div class="filter-group">
+        <label>Satellite</label>
+        <select id="filter-sat"></select>
+      </div>
+      <div class="filter-group">
+        <label>Frequency band</label>
+        <select id="filter-band"></select>
+      </div>
+      <div class="filter-group">
+        <label>Direction signal arrived from</label>
+        <div class="row">
+          <select id="filter-az-dir">
+            <option value="">Any direction</option>
+            <option value="0">North</option>
+            <option value="45">NE</option>
+            <option value="90">East</option>
+            <option value="135">SE</option>
+            <option value="180">South</option>
+            <option value="225">SW</option>
+            <option value="270">West</option>
+            <option value="315">NW</option>
+          </select>
+          <span>&plusmn;</span>
+          <input type="number" id="filter-az-width" value="30" min="1" max="180">
+          <span>&deg;</span>
+        </div>
+      </div>
+      <div class="filter-group">
+        <label>Elevation above horizon (0&deg;=horizon, 90&deg;=overhead)</label>
+        <div class="row">
+          <input type="number" id="filter-el-min" placeholder="min" min="0" max="90">
+          <span>to</span>
+          <input type="number" id="filter-el-max" placeholder="max" min="0" max="90">
+          <span>&deg;</span>
+        </div>
+      </div>
+      <button type="button" onclick="clearFilters()">Clear filters</button>
+    </div>
+    <div class="hint" id="filter-hint">
+      {{ hostname_a }}: {{ gnss_quality_series_a|length }} arcs | {{ hostname_b }}: {{ gnss_quality_series_b|length }} arcs
+    </div>
+    <div class="chart-wrap"><canvas id="chart-compare"></canvas></div>
+    <div class="hint">
+      Each dot is one satellite arc's reflector height (all constellations pooled per station - see the single-station
+      dashboard for the constellation breakdown); the bold line is each station's time-windowed smoothed RH.
+      Y axis inverted (taller reflector = further down) to match convention. Drag to zoom, wheel to zoom, Shift+drag to pan.
+      "Direction" is the compass azimuth the signal's reflection arrived from (0&deg;=N, 90&deg;=E, 180&deg;=S, 270&deg;=W);
+      "Elevation" is how high the satellite was above the horizon during that arc. Elevation filtering only works for
+      arcs reprocessed since this feature was added - older days may need "Run GNSS-IR analysis" again to pick it up.
+    </div>
+    {% else %}
+    <div class="empty-state">Neither station has GNSS-IR results yet for this time range.</div>
+    {% endif %}
+  </div>
+
+  <div id="arc-detail-modal" class="modal-overlay" hidden onclick="if (event.target === this) closeArcDetail()">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 id="arc-detail-title"></h3>
+        <button type="button" onclick="closeArcDetail()">Close</button>
+      </div>
+      <div id="arc-detail-status" class="hint"></div>
+      <div class="modal-chart-wrap"><canvas id="chart-arc-raw"></canvas></div>
+      <div class="modal-chart-wrap"><canvas id="chart-arc-periodogram"></canvas></div>
+    </div>
+  </div>
+
+<script>
+const hostnameA = {{ hostname_a | tojson }};
+const hostnameB = {{ hostname_b | tojson }};
+const seriesA = {{ gnss_quality_series_a | tojson }};
+const seriesB = {{ gnss_quality_series_b | tojson }};
+
+const csvField = v => `"${String(v).replace(/"/g, '""')}"`;
+function downloadCsv(rows, filenameSuffix) {
+  const csv = rows.map(row => row.map(csvField).join(",")).join("\r\n");
+  const bom = String.fromCharCode(0xFEFF);
+  const blob = new Blob([bom + csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `rtkdashboard-compare-${filenameSuffix}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// Exports whatever the chart is currently showing (same filters applied),
+// not the unfiltered full series - "export what I'm looking at" is more
+// useful than always exporting everything regardless of the filter panel.
+function exportCompareCsv() {
+  const filters = currentFilters();
+  const header = ["station", "time_utc", "system", "sat", "freq_label", "rh_m", "azimuth_deg", "elevation_min_deg", "elevation_max_deg", "amplitude", "peak2noise"];
+  const rows = [];
+  for (const [hostname, series] of [[hostnameA, seriesA], [hostnameB, seriesB]]) {
+    for (const p of series) {
+      if (filterReject(p, filters) !== null) continue;
+      rows.push([hostname, p.t, p.system, p.sat, p.freq_label, p.rh_m, p.azimuth_deg, p.elevation_min_deg, p.elevation_max_deg, p.amplitude, p.peak2noise]);
+    }
+  }
+  downloadCsv([header, ...rows], "gnss-quality");
+}
+
+const toNaive = s => s.replace(" ", "T");
+
+if (window.ChartZoom) { Chart.register(window.ChartZoom); }
+
+// Same centered time-windowed average as the single-station dashboard (see
+// dashboard.html's computeSmoothedRh) - kept as an independent copy since
+// this is a standalone page, not sharing a script scope with it.
+const SMOOTH_WINDOW_MS = 90 * 60 * 1000; // +/-90 min
+function computeSmoothedRh(points) {
+  const times = points.map(p => Date.parse(p.t));
+  const out = [];
+  let lo = 0, hi = 0, sum = 0;
+  for (let i = 0; i < points.length; i++) {
+    while (hi < points.length && times[hi] <= times[i] + SMOOTH_WINDOW_MS) {
+      sum += points[hi].rh_m;
+      hi++;
+    }
+    while (lo < points.length && times[lo] < times[i] - SMOOTH_WINDOW_MS) {
+      sum -= points[lo].rh_m;
+      lo++;
+    }
+    out.push({ x: toNaive(points[i].t_display), y: sum / (hi - lo) });
+  }
+  return out;
+}
+
+// One color family per station (not per constellation, unlike the
+// single-station dashboard) - the point of this view is comparing two
+// stations, so station identity is what needs to read clearly at a
+// glance; constellation detail is still available per-point in the CSV
+// export and in each station's own dashboard.
+const STATION_STYLE = [
+  { pointColor: "rgba(37, 99, 235, 0.6)", lineColor: "#1e3a8a" },  // blue family
+  { pointColor: "rgba(220, 38, 38, 0.6)", lineColor: "#7f1d1d" },  // red family
+];
+
+// --- Filters (satellite / direction / elevation) --------------------------
+// Applied client-side to the already-fetched series - no re-request to the
+// server, since the point count here (thousands, not millions) makes that
+// unnecessary and keeps the filter controls instant.
+
+const SYSTEM_ORDER = ["gps", "glonass", "galileo", "beidou"];
+
+// Two-level constellation -> satellite cascade (rather than one flat
+// "100+ satellites" dropdown) - the satellite dropdown is always scoped
+// to whichever constellation is currently selected (see
+// populateSatFilter's constellation param and the change wiring below).
+function populateConstellationFilter() {
+  const sel = document.getElementById("filter-constellation");
+  const seen = new Set([...seriesA, ...seriesB].map(p => p.system));
+  const systems = SYSTEM_ORDER.filter(s => seen.has(s));
+  sel.innerHTML = `<option value="">ALL</option>` + systems.map(s => `<option value="${s}">${s.toUpperCase()}</option>`).join("");
+}
+
+function populateSatFilter(constellation) {
+  const sel = document.getElementById("filter-sat");
+  const prior = sel.value;
+  const sats = new Set(
+    [...seriesA, ...seriesB]
+      .filter(p => !constellation || p.system === constellation)
+      .map(p => p.sat));
+  const sorted = [...sats].sort((a, b) => a - b);
+  sel.innerHTML = `<option value="">ALL</option>` + sorted.map(s => `<option value="${s}">${s}</option>`).join("");
+  sel.disabled = !constellation;
+  // Only preserve the prior selection when narrowing to a *specific*
+  // constellation; widening back to ALL always resets to ALL, even
+  // though the old value technically still appears in the unscoped list
+  // - keeping it selected there reads as "clear filters didn't work".
+  sel.value = (constellation && sorted.includes(Number(prior))) ? prior : "";
+}
+
+// Satellite and band are siblings, both scoped to the constellation only
+// (not to each other) - see dashboard.html's populateBandFilter for the
+// same function and why.
+function populateBandFilter(constellation) {
+  const sel = document.getElementById("filter-band");
+  const prior = sel.value;
+  const seen = new Map(); // freq_label -> freq (for sort order)
+  for (const p of [...seriesA, ...seriesB]) {
+    if (constellation && p.system !== constellation) continue;
+    if (!seen.has(p.freq_label)) seen.set(p.freq_label, p.freq);
+  }
+  const labels = [...seen.keys()].sort((a, b) => seen.get(a) - seen.get(b));
+  sel.innerHTML = `<option value="">ALL</option>` + labels.map(l => `<option value="${l}">${l}</option>`).join("");
+  sel.disabled = !constellation;
+  sel.value = (constellation && labels.includes(prior)) ? prior : "";
+}
+
+// Azimuth wraps at 0/360 (e.g. "North +/-30" is really 330-360 plus
+// 0-30), so this can't just be a plain min<=x<=max range check.
+function azimuthInRange(azimuth, center, halfWidth) {
+  const diff = Math.abs(((azimuth - center + 540) % 360) - 180);
+  return diff <= halfWidth;
+}
+
+function currentFilters() {
+  const constellation = document.getElementById("filter-constellation").value;
+  const satValue = document.getElementById("filter-sat").value;
+  const bandValue = document.getElementById("filter-band").value;
+  const azDir = document.getElementById("filter-az-dir").value;
+  const azWidth = parseFloat(document.getElementById("filter-az-width").value);
+  const elMinRaw = document.getElementById("filter-el-min").value;
+  const elMaxRaw = document.getElementById("filter-el-max").value;
+  return {
+    constellation: constellation === "" ? null : constellation,
+    sat: satValue === "" ? null : Number(satValue),
+    band: bandValue === "" ? null : bandValue,
+    azCenter: azDir === "" ? null : parseFloat(azDir),
+    azWidth: Number.isFinite(azWidth) ? azWidth : 30,
+    elMin: elMinRaw === "" ? null : parseFloat(elMinRaw),
+    elMax: elMaxRaw === "" ? null : parseFloat(elMaxRaw),
+  };
+}
+
+// Returns null if p passes, or a short reason string if it doesn't - the
+// reason distinguishes "genuinely outside the filter" from "can't tell,
+// missing elevation data from before this feature existed" for the
+// hidden-point count shown under the chart.
+function filterReject(p, f) {
+  if (f.constellation !== null && p.system !== f.constellation) return "constellation";
+  if (f.band !== null && p.freq_label !== f.band) return "band";
+  if (f.sat !== null && p.sat !== f.sat) return "sat";
+  if (f.azCenter !== null && !azimuthInRange(p.azimuth_deg, f.azCenter, f.azWidth)) return "azimuth";
+  if (f.elMin !== null || f.elMax !== null) {
+    if (p.elevation_min_deg === undefined || p.elevation_max_deg === undefined) return "no-elevation-data";
+    const lo = f.elMin === null ? -Infinity : f.elMin;
+    const hi = f.elMax === null ? Infinity : f.elMax;
+    // "in range" = the arc's swept elevation band overlaps the requested
+    // band at all, not "entirely contained in it" - an arc covers a span
+    // of elevations, and any part of that span crossing the requested
+    // window is what makes it relevant.
+    if (p.elevation_max_deg < lo || p.elevation_min_deg > hi) return "elevation";
+  }
+  return null;
+}
+
+function stationDatasets(hostname, series, style, filters) {
+  const kept = [];
+  let hiddenNoElevation = 0;
+  for (const p of series) {
+    const reason = filterReject(p, filters);
+    if (reason === null) kept.push(p);
+    else if (reason === "no-elevation-data") hiddenNoElevation++;
+  }
+  if (!kept.length) return { datasets: [], hiddenNoElevation, keptCount: 0 };
+  return {
+    datasets: [
+      {
+        label: `${hostname} arcs`,
+        data: kept.map(p => ({
+          x: toNaive(p.t_display), y: p.rh_m,
+          system: p.system, sat: p.sat, amplitude: p.amplitude, peak2noise: p.peak2noise,
+          azimuth_deg: p.azimuth_deg,
+          date: p.t.slice(0, 10), arcKey: p.arc_key, station: hostname,
+        })),
+        backgroundColor: style.pointColor,
+        pointRadius: 3, pointHoverRadius: 5,
+      },
+      {
+        type: "line",
+        label: `${hostname} smoothed`,
+        data: computeSmoothedRh(kept),
+        borderColor: style.lineColor, borderWidth: 2, pointRadius: 0, tension: 0.2, fill: false,
+      },
+    ],
+    hiddenNoElevation,
+    keptCount: kept.length,
+  };
+}
+
+let compareChart = null;
+const canvas = document.getElementById("chart-compare");
+const SMOOTHED_LABELS = new Set([`${hostnameA} smoothed`, `${hostnameB} smoothed`]);
+
+if (canvas) {
+  populateConstellationFilter();
+  populateSatFilter(null);
+  populateBandFilter(null);
+  const initial = currentFilters();
+  const initialA = stationDatasets(hostnameA, seriesA, STATION_STYLE[0], initial);
+  const initialB = stationDatasets(hostnameB, seriesB, STATION_STYLE[1], initial);
+
+  // Explicit redraw pass so both smoothed lines stay visible through the
+  // combined point cloud of both stations, the same trick the
+  // single-station dashboard's RH chart uses (see redrawOnTop there).
+  const redrawOnTop = {
+    id: "redrawOnTop",
+    afterDatasetsDraw(chart) {
+      chart.data.datasets.forEach((ds, idx) => {
+        if (!SMOOTHED_LABELS.has(ds.label)) return;
+        const meta = chart.getDatasetMeta(idx);
+        if (!meta.hidden) meta.controller.draw();
+      });
+    },
+  };
+
+  // Vertical crosshair at the mouse's x position, reading off both
+  // stations' *smoothed* lines (not raw points - those are noisy and
+  // don't have a well-defined value at an arbitrary x) and showing their
+  // difference. Entirely inert when the checkbox is off - no listeners
+  // do anything but return immediately (see the mousemove/mouseleave
+  // handlers below), so it can't affect normal chart behavior.
+  let crosshairEnabled = false;
+  let crosshairPixelX = null;
+
+  // Linear interpolation between the two smoothed-line points bracketing
+  // xValue (a timestamp in ms). Returns null past either end of the
+  // series - extrapolating a smoothed RH trend beyond the data it was
+  // computed from would be misleading, not just imprecise.
+  function interpolateAt(dataset, xValue) {
+    if (!dataset || !dataset.data.length) return null;
+    const pts = dataset.data;
+    if (xValue <= Date.parse(pts[0].x)) return xValue === Date.parse(pts[0].x) ? pts[0].y : null;
+    for (let i = 1; i < pts.length; i++) {
+      const t0 = Date.parse(pts[i - 1].x), t1 = Date.parse(pts[i].x);
+      if (xValue <= t1) {
+        if (t1 === t0) return pts[i].y;
+        const frac = (xValue - t0) / (t1 - t0);
+        return pts[i - 1].y + frac * (pts[i].y - pts[i - 1].y);
+      }
+    }
+    return null;
+  }
+
+  const crosshairPlugin = {
+    id: "crosshair",
+    afterDraw(chart) {
+      if (!crosshairEnabled || crosshairPixelX === null) return;
+      const { ctx, chartArea, scales } = chart;
+      if (crosshairPixelX < chartArea.left || crosshairPixelX > chartArea.right) return;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(crosshairPixelX, chartArea.top);
+      ctx.lineTo(crosshairPixelX, chartArea.bottom);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "rgba(55, 65, 81, 0.8)";
+      ctx.setLineDash([4, 4]);
+      ctx.stroke();
+
+      const xValue = scales.x.getValueForPixel(crosshairPixelX);
+      const dsA = chart.data.datasets.find(d => d.label === `${hostnameA} smoothed`);
+      const dsB = chart.data.datasets.find(d => d.label === `${hostnameB} smoothed`);
+      const valA = interpolateAt(dsA, xValue);
+      const valB = interpolateAt(dsB, xValue);
+
+      const lines = [
+        `${hostnameA}: ${valA === null ? "n/a" : valA.toFixed(3) + " m"}`,
+        `${hostnameB}: ${valB === null ? "n/a" : valB.toFixed(3) + " m"}`,
+        `diff: ${(valA === null || valB === null) ? "n/a" : (valA - valB).toFixed(3) + " m"}`,
+      ];
+
+      ctx.setLineDash([]);
+      ctx.font = "12px -apple-system, sans-serif";
+      const padding = 6;
+      const lineHeight = 16;
+      const boxWidth = Math.max(...lines.map(l => ctx.measureText(l).width)) + padding * 2;
+      const boxHeight = lines.length * lineHeight + padding * 2;
+      // Keep the label fully on-screen: flip to the left of the line once
+      // there's not enough room on the right, clamp vertically inside the
+      // chart area.
+      let boxX = crosshairPixelX + 8;
+      if (boxX + boxWidth > chartArea.right) boxX = crosshairPixelX - 8 - boxWidth;
+      const boxY = chartArea.top + 8;
+
+      ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
+      ctx.strokeStyle = "rgba(209, 213, 219, 1)";
+      ctx.lineWidth = 1;
+      ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
+      ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
+      ctx.fillStyle = "#1c1917";
+      lines.forEach((line, i) => {
+        ctx.fillText(line, boxX + padding, boxY + padding + (i + 1) * lineHeight - 4);
+      });
+      ctx.restore();
+    },
+  };
+
+  canvas.addEventListener("mousemove", (event) => {
+    if (!crosshairEnabled) return;
+    const rect = canvas.getBoundingClientRect();
+    crosshairPixelX = event.clientX - rect.left;
+    compareChart.draw();
+  });
+  canvas.addEventListener("mouseleave", () => {
+    if (!crosshairEnabled) return;
+    crosshairPixelX = null;
+    compareChart.draw();
+  });
+  document.getElementById("crosshair-toggle").addEventListener("change", (event) => {
+    crosshairEnabled = event.target.checked;
+    if (!crosshairEnabled) crosshairPixelX = null;
+    compareChart.draw();
+  });
+
+  compareChart = new Chart(canvas, {
+    type: "scatter",
+    plugins: [redrawOnTop, crosshairPlugin],
+    data: {
+      datasets: [...initialA.datasets, ...initialB.datasets],
+    },
+    options: {
+      animation: false,
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "nearest", intersect: true },
+      // Click a single arc's point -> popup its raw SNR/elevation curve
+      // and Lomb-Scargle periodogram, same as the single-station
+      // dashboard's RH chart (see openArcDetail below) - each point
+      // carries which station it came from (see stationDatasets above),
+      // since this chart can show arcs from either station at once.
+      onClick(event, elements, chart) {
+        if (!elements.length) return;
+        const el = elements[0];
+        const ds = chart.data.datasets[el.datasetIndex];
+        if (SMOOTHED_LABELS.has(ds.label)) return;
+        openArcDetail(ds.data[el.index]);
+      },
+      scales: {
+        x: {
+          type: "time",
+          time: {
+            displayFormats: { day: "MM-dd", hour: "MM-dd HH:mm", minute: "HH:mm" },
+            tooltipFormat: "yyyy-MM-dd HH:mm",
+          },
+          ticks: { autoSkip: true, maxTicksLimit: 12 },
+        },
+        y: { reverse: true, title: { display: true, text: "Reflector height (m)" } },
+      },
+      plugins: {
+        legend: { position: "bottom" },
+        tooltip: {
+          callbacks: {
+            label(context) {
+              if (SMOOTHED_LABELS.has(context.dataset.label)) {
+                return `${context.dataset.label}: ${context.parsed.y.toFixed(2)} m`;
+              }
+              const p = context.raw;
+              const base = `${context.dataset.label} (${p.system} sat ${p.sat}): RH ${p.y.toFixed(2)} m, Amp ${p.amplitude}, Pk/Noise ${p.peak2noise}`;
+              return p.arcKey ? `${base} (click for detail)` : base;
+            },
+          },
+        },
+        zoom: {
+          zoom: {
+            drag: { enabled: true, backgroundColor: "rgba(37, 99, 235, 0.15)" },
+            wheel: { enabled: true },
+            mode: "x",
+          },
+          pan: { enabled: true, mode: "x", modifierKey: "shift" },
+          limits: { x: { min: "original", max: "original" } },
+        },
+      },
+    },
+  });
+
+  function rebuildChart() {
+    const filters = currentFilters();
+    const a = stationDatasets(hostnameA, seriesA, STATION_STYLE[0], filters);
+    const b = stationDatasets(hostnameB, seriesB, STATION_STYLE[1], filters);
+    compareChart.data.datasets = [...a.datasets, ...b.datasets];
+    compareChart.update();
+
+    const hint = document.getElementById("filter-hint");
+    let text = `${hostnameA}: ${a.keptCount} arcs | ${hostnameB}: ${b.keptCount} arcs`;
+    const hiddenNoElevation = a.hiddenNoElevation + b.hiddenNoElevation;
+    if (hiddenNoElevation > 0) {
+      text += ` (${hiddenNoElevation} more hidden - no elevation data cached yet, needs reprocessing)`;
+    }
+    hint.textContent = text;
+  }
+
+  document.getElementById("filter-constellation").addEventListener("change", (e) => {
+    populateSatFilter(e.target.value || null);
+    populateBandFilter(e.target.value || null);
+    rebuildChart();
+  });
+  for (const id of ["filter-sat", "filter-band", "filter-az-dir", "filter-az-width", "filter-el-min", "filter-el-max"]) {
+    document.getElementById(id).addEventListener("change", rebuildChart);
+  }
+  // Number inputs should also react while typing, not just on blur/step.
+  document.getElementById("filter-az-width").addEventListener("input", rebuildChart);
+  document.getElementById("filter-el-min").addEventListener("input", rebuildChart);
+  document.getElementById("filter-el-max").addEventListener("input", rebuildChart);
+
+  window.clearFilters = function () {
+    document.getElementById("filter-constellation").value = "";
+    populateSatFilter(null);
+    populateBandFilter(null);
+    document.getElementById("filter-az-dir").value = "";
+    document.getElementById("filter-az-width").value = "30";
+    document.getElementById("filter-el-min").value = "";
+    document.getElementById("filter-el-max").value = "";
+    rebuildChart();
+  };
+}
+
+// Same two-panel raw-SNR / periodogram popup as the single-station
+// dashboard (see dashboard.html's openArcDetail) - the only difference is
+// which station's arc-detail cache to query, taken from the clicked
+// point's own "station" field (see stationDatasets above) rather than a
+// single page-wide hostname, since this page can show points from either
+// station.
+let arcRawChart, arcPeriodogramChart;
+
+async function openArcDetail(point) {
+  const modal = document.getElementById("arc-detail-modal");
+  const title = document.getElementById("arc-detail-title");
+  const status = document.getElementById("arc-detail-status");
+  title.textContent = `${point.station} ${point.system} sat ${point.sat} - RH ${point.y.toFixed(2)} m`;
+  status.textContent = "";
+  modal.hidden = false;
+
+  if (!point.arcKey) {
+    status.textContent = "No raw-arc detail cached for this point - re-run GNSS-IR analysis to backfill it (older days need reprocessing to pick this up).";
+    if (arcRawChart) { arcRawChart.destroy(); arcRawChart = null; }
+    if (arcPeriodogramChart) { arcPeriodogramChart.destroy(); arcPeriodogramChart = null; }
+    return;
+  }
+
+  let detail;
+  try {
+    const r = await fetch(`/gnss_arc_detail/${point.date}/${point.arcKey}?station=${encodeURIComponent(point.station)}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    detail = await r.json();
+  } catch (e) {
+    status.textContent = "Couldn't load arc detail: " + e.message;
+    return;
+  }
+
+  if (arcRawChart) arcRawChart.destroy();
+  arcRawChart = new Chart(document.getElementById("chart-arc-raw"), {
+    type: "line",
+    data: {
+      datasets: [{
+        label: "Detrended SNR",
+        data: detail.elevation_deg.map((e, i) => ({ x: e, y: detail.dsnr[i] })),
+        borderColor: "#2563eb", pointRadius: 0, borderWidth: 1.5, tension: 0,
+      }],
+    },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { type: "linear", title: { display: true, text: "Elevation angle (deg)" } },
+        y: { title: { display: true, text: "volts/volts" } },
+      },
+      plugins: { legend: { display: false }, title: { display: true, text: "Raw data", font: { size: 12 } } },
+    },
+  });
+
+  if (arcPeriodogramChart) arcPeriodogramChart.destroy();
+  const peakIdx = detail.periodogram_amplitude.reduce(
+    (best, v, i) => (v > detail.periodogram_amplitude[best] ? i : best), 0);
+  arcPeriodogramChart = new Chart(document.getElementById("chart-arc-periodogram"), {
+    type: "line",
+    data: {
+      datasets: [
+        {
+          label: "Periodogram",
+          data: detail.periodogram_rh_m.map((rh, i) => ({ x: rh, y: detail.periodogram_amplitude[i] })),
+          borderColor: "#16a34a", pointRadius: 0, borderWidth: 1.5, tension: 0.1,
+        },
+        {
+          label: "Peak (RH)",
+          data: [{ x: detail.periodogram_rh_m[peakIdx], y: detail.periodogram_amplitude[peakIdx] }],
+          borderColor: "#dc2626", backgroundColor: "#dc2626", pointRadius: 5, showLine: false,
+        },
+      ],
+    },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { type: "linear", title: { display: true, text: "Reflector height (m)" } },
+        y: { title: { display: true, text: "volts/volts" } },
+      },
+      plugins: { legend: { display: false }, title: { display: true, text: "Periodogram", font: { size: 12 } } },
+    },
+  });
+}
+
+function closeArcDetail() {
+  document.getElementById("arc-detail-modal").hidden = true;
+}
+</script>
+</body>
+</html>

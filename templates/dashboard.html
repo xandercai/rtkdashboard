@@ -1,0 +1,1077 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>rtkdashboard - {{ hostname }}</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+<!-- chartjs-plugin-zoom's pan feature is implemented with Hammer.js gesture
+     recognition internally; it reads window.Hammer at load time, so this
+     must come before the zoom plugin script. Without it, drag-zoom/wheel
+     still work (they don't use Hammer) but pan silently fails to
+     initialize. -->
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2"></script>
+<style>
+  body { font-family: -apple-system, "Segoe UI", sans-serif; margin: 24px; background: #fafafa; color: #1c1917; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .sub { color: #6b7280; margin-bottom: 16px; }
+  .flash { padding: 8px 12px; border-radius: 6px; margin-bottom: 16px; }
+  .flash.success { background: #dcfce7; color: #166534; }
+  .flash.error { background: #fee2e2; color: #991b1b; }
+  .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin-bottom: 24px; display: flex; flex-direction: column; }
+  .card h2 { font-size: 14px; margin: 0 0 12px; color: #374151; }
+  .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .card-header h2 { margin: 0; }
+  .chart-wrap { position: relative; flex: 1 1 auto; min-height: 0; }
+  .chart-wrap canvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
+  /* Two full-width halves stacked vertically: overview on top, RH chart
+     below, split by percentage flex-basis - which needs the container to
+     have a *definite* height to resolve against (min-height doesn't count
+     for that, only height does - percentages silently fall back to "auto"
+     otherwise, which is what made this not work at first). The GNSS card
+     gets a bigger share since it carries a filter panel + extra hint line
+     the overview card doesn't, so the two *chart-wrap* areas - not just
+     the two cards - end up close to equal height. */
+  .main-cards { display: flex; flex-direction: column; gap: 24px; height: 92vh; }
+  .main-cards .card { flex: 0 0 44%; min-height: 380px; margin-bottom: 0; }
+  .main-cards .card.gnss-card { flex-basis: 56%; }
+  .empty-state { color: #9ca3af; font-size: 13px; text-align: center; padding: 32px 0; }
+  .alert-scroll { max-height: 360px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e5e7eb; }
+  th { color: #6b7280; font-weight: 600; position: sticky; top: 0; background: #fff; z-index: 1; }
+  .cat { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; background: #fef3c7; color: #92400e; }
+  form.refresh, form.rangepick { display: inline; }
+  button, select { padding: 6px 14px; border-radius: 6px; border: 1px solid #d1d5db; background: #fff; cursor: pointer; font-size: 14px; }
+  button:hover { background: #f3f4f6; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .hint { font-size: 12px; color: #9ca3af; margin-top: 8px; }
+  .modal-overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45); display: flex; align-items: center; justify-content: center; z-index: 100; }
+  .modal-overlay[hidden] { display: none; }
+  .modal-box { background: #fff; border-radius: 8px; padding: 16px; width: min(720px, 92vw); max-height: 88vh; overflow-y: auto; }
+  .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .modal-header h3 { margin: 0; font-size: 14px; }
+  .modal-chart-wrap { position: relative; height: 220px; margin-top: 12px; }
+  .modal-chart-wrap canvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
+  .filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 16px; padding: 8px 12px; margin-bottom: 8px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; }
+  .filter-group { display: flex; flex-direction: column; gap: 4px; }
+  .filter-group label { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.03em; }
+  .filter-group .row { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .filter-group select[multiple] { min-width: 160px; font-size: 13px; }
+  .filter-group input[type=number] { width: 64px; padding: 4px 6px; border-radius: 6px; border: 1px solid #d1d5db; }
+</style>
+</head>
+<body>
+  <h1>rtkdashboard</h1>
+  <div class="sub">Station:
+    <form class="rangepick" method="get" action="{{ url_for('dashboard') }}">
+      <select name="station" onchange="this.form.submit()">
+        {% for s in all_stations %}
+        <option value="{{ s.hostname }}" {{ "selected" if s.hostname == hostname }}>{{ s.hostname }}</option>
+        {% endfor %}
+      </select>
+      <select name="days" onchange="this.form.submit()">
+        <option value="1" {{ "selected" if days == 1 }}>Last 1 day</option>
+        <option value="3" {{ "selected" if days == 3 }}>Last 3 days</option>
+        <option value="7" {{ "selected" if days == 7 }}>Last 7 days</option>
+        <option value="30" {{ "selected" if days == 30 }}>Last 30 days</option>
+        <option value="90" {{ "selected" if days == 90 }}>Last 90 days</option>
+      </select>
+    </form>
+    <form class="refresh" method="post" action="{{ url_for('refresh') }}" id="sync-form">
+      <input type="hidden" name="station" value="{{ hostname }}">
+      <input type="hidden" name="days" value="{{ days }}">
+      <input type="hidden" name="force" id="sync-force-input" value="0">
+      <button type="submit">Sync from Google Drive</button>
+    </form>
+    <form class="refresh" method="post" action="{{ url_for('refresh_gnssrefl') }}">
+      <input type="hidden" name="station" value="{{ hostname }}">
+      <input type="hidden" name="days" value="{{ days }}">
+      <button type="submit" id="gnssrefl-run-btn" {{ "disabled" if gnssrefl_status.running }}>Run GNSS-IR analysis</button>
+      <label style="font-size: 12px; color: #6b7280; margin-left: 4px;" title="Reprocesses every available day from scratch, ignoring the incremental &quot;only if new files arrived&quot; check. Also applies to Sync from Google Drive: when checked, syncing pulls every file ever uploaded (instead of just the last few days) and backfills/overwrites the local cache - slower, but needed to backfill a day the dashboard code itself started reading a new field from, or to recover a cache that's missing older history.">
+        <input type="checkbox" name="force" id="force-reprocess-checkbox" value="1" style="vertical-align: middle;"> Force full reprocess
+      </label>
+    </form>
+    <span id="gnssrefl-status-text" class="hint" style="margin-left: 8px;"></span>
+  </div>
+  <div class="sub">
+    All times shown in {{ display_tz }}.
+    {% if latest_data_t_display %}
+      Latest synced data: {{ latest_data_t_display }}.
+    {% else %}
+      No data synced for this station yet.
+    {% endif %}
+  </div>
+
+  <div class="sub">Compare stations (GNSS-IR reflector height only):
+    <select id="compare-a">
+      {% for s in all_stations %}
+      <option value="{{ s.hostname }}" {{ "selected" if s.hostname == hostname }}>{{ s.hostname }}</option>
+      {% endfor %}
+    </select>
+    vs
+    {% set ns = namespace(picked=false) %}
+    <select id="compare-b">
+      {% for s in all_stations %}
+      {% set is_default = (not ns.picked) and s.hostname != hostname %}
+      {% if is_default %}{% set ns.picked = true %}{% endif %}
+      <option value="{{ s.hostname }}" {{ "selected" if is_default }}>{{ s.hostname }}</option>
+      {% endfor %}
+    </select>
+    <button type="button" onclick="openCompare()" {{ "disabled" if all_stations|length < 2 }}>Compare</button>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="flash {{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <div class="main-cards">
+    <div class="card">
+      <div class="card-header">
+        <h2>Station Overview - Temperature / Voltages / Load Power / GNSS Data Size</h2>
+        <div>
+          <button type="button" onclick="allChart.resetZoom()" {{ "disabled" if not (temperature_series or voltage_series or data_size_series or alerts) }}>Reset zoom</button>
+          <button type="button" onclick="exportAlertsCsv()" {{ "disabled" if not alerts }}>Export Alerts CSV</button>
+        </div>
+      </div>
+      {% if temperature_series or voltage_series or data_size_series or alerts %}
+      <div class="chart-wrap"><canvas id="chart-all"></canvas></div>
+      <div class="hint">
+        Background shading follows time of day: darkest at midnight, lightest at noon.
+        Drag horizontally to zoom into a time range; mouse-wheel also zooms; hold Shift and drag to pan; click legend entries to hide/show series; "Reset zoom" restores the full range.
+      </div>
+      {% else %}
+      <div class="empty-state">No Station Overview data uploaded for this station yet.</div>
+      {% endif %}
+    </div>
+
+    <div class="card gnss-card">
+      <div class="card-header">
+        <h2>GNSS Signal Quality (gnssrefl)</h2>
+        <div>
+          <button type="button" onclick="gnssQualityChart.resetZoom()" {{ "disabled" if not gnss_quality_series }}>Reset zoom</button>
+          <button type="button" onclick="exportGnssQualityCsv()" {{ "disabled" if not gnss_quality_series }}>Export CSV</button>
+        </div>
+      </div>
+      {% if gnss_quality_series %}
+      <div class="filters">
+        <div class="filter-group">
+          <label>Constellation</label>
+          <select id="filter-constellation"></select>
+        </div>
+        <div class="filter-group">
+          <label>Satellite</label>
+          <select id="filter-sat"></select>
+        </div>
+        <div class="filter-group">
+          <label>Frequency band</label>
+          <select id="filter-band"></select>
+        </div>
+        <div class="filter-group">
+          <label>Direction signal arrived from</label>
+          <div class="row">
+            <select id="filter-az-dir">
+              <option value="">Any direction</option>
+              <option value="0">North</option>
+              <option value="45">NE</option>
+              <option value="90">East</option>
+              <option value="135">SE</option>
+              <option value="180">South</option>
+              <option value="225">SW</option>
+              <option value="270">West</option>
+              <option value="315">NW</option>
+            </select>
+            <span>&plusmn;</span>
+            <input type="number" id="filter-az-width" value="30" min="1" max="180">
+            <span>&deg;</span>
+          </div>
+        </div>
+        <div class="filter-group">
+          <label>Elevation above horizon (0&deg;=horizon, 90&deg;=overhead)</label>
+          <div class="row">
+            <input type="number" id="filter-el-min" placeholder="min" min="0" max="90">
+            <span>to</span>
+            <input type="number" id="filter-el-max" placeholder="max" min="0" max="90">
+            <span>&deg;</span>
+          </div>
+        </div>
+        <button type="button" onclick="clearGnssFilters()">Clear filters</button>
+      </div>
+      <div class="hint" id="filter-hint">
+        {{ gnss_summary.satellite_count }} satellites tracked | {{ gnss_summary.total_arcs }} arcs
+        ({% for sys, n in gnss_summary.by_system.items() %}{{ sys }} {{ n }}{{ ", " if not loop.last }}{% endfor %})
+      </div>
+      <div class="chart-wrap"><canvas id="chart-gnss-quality"></canvas></div>
+      <div class="hint">Each dot = one arc's reflector height; line = smoothed RH (black=multi-GNSS, purple=GPS-only fallback). Pale bars = each day's raw arc count (always unfiltered). Y axis inverted. Drag/wheel to zoom, Shift+drag to pan. Direction/elevation filters need "Run GNSS-IR analysis" rerun on older days to take effect.</div>
+      {% else %}
+      <div class="empty-state">No GNSS-IR results yet. Click "Run GNSS-IR analysis" above to process synced .ubx files.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div id="arc-detail-modal" class="modal-overlay" hidden onclick="if (event.target === this) closeArcDetail()">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 id="arc-detail-title"></h3>
+        <button type="button" onclick="closeArcDetail()">Close</button>
+      </div>
+      <div id="arc-detail-status" class="hint"></div>
+      <div class="modal-chart-wrap"><canvas id="chart-arc-raw"></canvas></div>
+      <div class="modal-chart-wrap"><canvas id="chart-arc-periodogram"></canvas></div>
+    </div>
+  </div>
+
+<script>
+const hostname = {{ hostname | tojson }};
+const temperatureSeries = {{ temperature_series | tojson }};
+const voltageSeries = {{ voltage_series | tojson }};
+const dataSizeSeries = {{ data_size_series | tojson }};
+const powerStats = {{ power_stats | tojson }};
+const alertsData = {{ alerts | tojson }};
+const gnssQualitySeries = {{ gnss_quality_series | tojson }};
+const gnssDailyArcCounts = {{ gnss_daily_arc_counts | tojson }};
+let gnssQualityChart; // assigned below, if there's data to chart - referenced by the card's "Reset zoom" button
+
+// Quote every field per RFC 4180 (simplest correct rule: doubling embedded
+// quotes always works, regardless of whether the field also has commas or
+// newlines) rather than only quoting fields that look like they need it.
+const csvField = v => `"${String(v).replace(/"/g, '""')}"`;
+
+// Leading UTF-8 BOM (U+FEFF) so Excel opens this correctly instead of
+// guessing the system codepage and mangling any non-ASCII characters.
+// Built via fromCharCode rather than a literal character in the source,
+// which does not reliably survive file round-trips through this toolchain.
+function downloadCsv(rows, filenameSuffix) {
+  const csv = rows.map(row => row.map(csvField).join(",")).join("\r\n");
+  const bom = String.fromCharCode(0xFEFF);
+  const blob = new Blob([bom + csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `rtkdashboard-${filenameSuffix}-{{ hostname }}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function exportAlertsCsv() {
+  const header = ["time", "category", "message"];
+  const rows = alertsData.map(a => [a.t_display, a.category, a.message]);
+  downloadCsv([header, ...rows], "alerts");
+}
+
+function exportGnssQualityCsv() {
+  const header = ["time_utc", "system", "sat", "freq_label", "rh_m", "azimuth_deg", "amplitude", "peak2noise"];
+  const rows = gnssQualitySeries.map(p => [p.t, p.system, p.sat, p.freq_label, p.rh_m, p.azimuth_deg, p.amplitude, p.peak2noise]);
+  downloadCsv([header, ...rows], "gnss-quality");
+}
+
+function openCompare() {
+  const a = document.getElementById("compare-a").value;
+  const b = document.getElementById("compare-b").value;
+  const days = {{ days }};
+  const url = `{{ url_for('compare') }}?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}&days=${days}`;
+  window.open(url, "_blank");
+}
+
+// t_display is pre-formatted server-side in the station's timezone (see
+// parsers._to_display). Converting it to a naive ISO string (no zone
+// suffix) makes the browser parse it as *local* wall-clock time, so the
+// axis shows exactly the station-local clock no matter what timezone the
+// viewing browser is in. All series share one real time axis, which keeps
+// points from different sources (sampled at different moments) correctly
+// positioned relative to each other.
+const toNaive = s => s.replace(" ", "T");
+
+// The zoom plugin's UMD build normally registers itself; the guard covers
+// versions where it exports window.ChartZoom without auto-registering.
+if (window.ChartZoom) { Chart.register(window.ChartZoom); }
+
+// Alert markers along the bottom: one small square per alert, at its real
+// time, colored by severity. Alerts landing on the exact same second are
+// stacked vertically (increasing y) so they don't overlap - order them
+// chronologically first so the stacking order is stable rather than
+// depending on get_alerts()'s own newest-first sort.
+const alertsChrono = [...alertsData].sort((a, b) => a.t.localeCompare(b.t));
+const alertStackNext = new Map(); // t_display -> next free stack slot
+const alertPoints = alertsChrono.map(a => {
+  const slot = alertStackNext.get(a.t_display) || 0;
+  alertStackNext.set(a.t_display, slot + 1);
+  return { x: toNaive(a.t_display), y: slot, category: a.category, severity: a.severity, message: a.message };
+});
+const alertStackMax = Math.max(0, ...alertPoints.map(p => p.y));
+// Oversize the axis range so the real stack (0..alertStackMax) only fills
+// roughly the bottom fifth of the chart, instead of the markers spreading
+// across the whole plot height the way a normal y-axis would.
+const alertAxisMax = (alertStackMax + 1) * 5;
+
+// Day/night background: overlay darkness proportional to (1 - sun factor),
+// where the sun factor follows a cosine over the hour of day - 0 at
+// midnight (darkest), 1 at noon (no overlay). Reads the x scale's current
+// min/max on every draw, so the shading stays correct while zooming and
+// panning. Hours come out in station wall-clock time because the data
+// feeds the axis naive local timestamps (see toNaive above).
+const dayNightShading = {
+  id: "dayNightShading",
+  beforeDraw(chart) {
+    const { ctx, chartArea, scales } = chart;
+    const x = scales.x;
+    if (!chartArea || !x || !(x.max > x.min)) return;
+    const grad = ctx.createLinearGradient(chartArea.left, 0, chartArea.right, 0);
+    const steps = 96; // plenty of stops for smoothness at any zoom level
+    for (let i = 0; i <= steps; i++) {
+      const d = new Date(x.min + (x.max - x.min) * i / steps);
+      const h = d.getHours() + d.getMinutes() / 60;
+      const sun = (1 + Math.cos((h - 12) / 12 * Math.PI)) / 2;
+      grad.addColorStop(i / steps, `rgba(30, 41, 59, ${((1 - sun) * 0.16).toFixed(3)})`);
+    }
+    ctx.save();
+    ctx.fillStyle = grad;
+    ctx.fillRect(chartArea.left, chartArea.top, chartArea.right - chartArea.left, chartArea.bottom - chartArea.top);
+    ctx.restore();
+  },
+};
+
+// null when this station has no Station Overview data at all (see the
+// card's Jinja if-guard in the template above - the canvas isn't even
+// rendered then), so the "Reset zoom" button's onclick is left disabled
+// rather than referencing a chart that was never created.
+let allChart = null;
+if (document.getElementById("chart-all")) {
+allChart = new Chart(document.getElementById("chart-all"), {
+  type: "line",
+  plugins: [dayNightShading],
+  data: {
+    datasets: [
+      {
+        label: "Temperature (C)",
+        data: temperatureSeries.map(p => ({ x: toNaive(p.t_display), y: p.temperature_c })),
+        borderColor: "#2563eb", pointRadius: 0, tension: 0.15, yAxisID: "yTemp",
+      },
+      {
+        label: "PV (V)",
+        data: voltageSeries.map(p => ({ x: toNaive(p.t_display), y: p.pv_voltage_v })),
+        borderColor: "#f59e0b", pointRadius: 0, tension: 0.15, yAxisID: "yVolt",
+      },
+      {
+        label: "Battery (V)",
+        data: voltageSeries.map(p => ({ x: toNaive(p.t_display), y: p.battery_voltage_v })),
+        borderColor: "#16a34a", pointRadius: 0, tension: 0.15, yAxisID: "yVolt",
+      },
+      {
+        label: "Load (V)",
+        data: voltageSeries.map(p => ({ x: toNaive(p.t_display), y: p.load_voltage_v })),
+        borderColor: "#dc2626", pointRadius: 0, tension: 0.15, yAxisID: "yVolt",
+      },
+      // Load power: when the station's 1-minute sampler data is available,
+      // show per-hour average with a shaded min-max band (the point
+      // snapshots can't represent a load that jumps around); otherwise fall
+      // back to the snapshot series so the chart still shows something.
+      ...(powerStats.length ? [
+        {
+          label: "_power_max",
+          data: powerStats.map(p => ({ x: toNaive(p.t_display), y: p.max_w })),
+          borderWidth: 0, pointRadius: 0, tension: 0.15, yAxisID: "yPower",
+          fill: "+1", backgroundColor: "rgba(8, 145, 178, 0.15)",
+        },
+        {
+          label: "_power_min",
+          data: powerStats.map(p => ({ x: toNaive(p.t_display), y: p.min_w })),
+          borderWidth: 0, pointRadius: 0, tension: 0.15, yAxisID: "yPower",
+        },
+        {
+          label: "Load power avg (W)",
+          data: powerStats.map(p => ({ x: toNaive(p.t_display), y: p.avg_w })),
+          borderColor: "#0891b2", borderDash: [5, 3], pointRadius: 0, tension: 0.15, yAxisID: "yPower",
+        },
+      ] : [
+        {
+          label: "Load power (W)",
+          data: voltageSeries.map(p => ({ x: toNaive(p.t_display), y: p.load_power_w })),
+          borderColor: "#0891b2", borderDash: [5, 3], pointRadius: 0, tension: 0.15, yAxisID: "yPower",
+        },
+      ]),
+      {
+        label: "GNSS file size (MB)",
+        data: dataSizeSeries.map(p => ({ x: toNaive(p.t_display), y: p.size_bytes / 1e6 })),
+        borderColor: "#7c3aed", pointRadius: 3, tension: 0.15, yAxisID: "ySize",
+      },
+      {
+        label: "Alerts: critical",
+        data: alertPoints.filter(p => p.severity === "critical"),
+        showLine: false, pointStyle: "rect", pointRadius: 5, pointHoverRadius: 7,
+        backgroundColor: "#dc2626", borderColor: "#991b1b", borderWidth: 1,
+        yAxisID: "yAlerts",
+      },
+      {
+        label: "Alerts: warning",
+        data: alertPoints.filter(p => p.severity === "warning"),
+        showLine: false, pointStyle: "rect", pointRadius: 5, pointHoverRadius: 7,
+        backgroundColor: "#f59e0b", borderColor: "#b45309", borderWidth: 1,
+        yAxisID: "yAlerts",
+      },
+    ],
+  },
+  options: {
+    animation: false,
+    spanGaps: true,
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: "nearest", axis: "x", intersect: false },
+    scales: {
+      x: {
+        type: "time",
+        time: {
+          unit: "hour",
+          displayFormats: { hour: "MM-dd HH:00" },
+          tooltipFormat: "yyyy-MM-dd HH:mm",
+        },
+        ticks: { autoSkip: true, maxTicksLimit: 16, maxRotation: 45 },
+      },
+      yTemp: { position: "left", title: { display: true, text: "C" }, grid: { drawOnChartArea: false } },
+      yVolt: { position: "left", title: { display: true, text: "V" } },
+      yPower: { position: "right", title: { display: true, text: "W" }, grid: { drawOnChartArea: false } },
+      ySize: { position: "right", title: { display: true, text: "MB" }, grid: { drawOnChartArea: false } },
+      // Hidden axis dedicated to the alert markers: display:false drops its
+      // ticks/line/title entirely, and the oversized max (see alertAxisMax
+      // above) confines the markers to a band near the bottom of the chart
+      // instead of spreading across the full plot height.
+      yAlerts: { display: false, min: -0.5, max: alertAxisMax },
+    },
+    plugins: {
+      // hide the band's helper datasets (labels starting "_") from the
+      // legend and tooltips - they only exist to draw the shaded area
+      legend: {
+        labels: { filter: item => !item.text.startsWith("_") },
+        // The min/max band has no legend entry of its own, so the default
+        // handler would leave the shading on screen after deselecting the
+        // average line. Toggle the band's datasets along with it.
+        onClick(e, legendItem, legend) {
+          const chart = legend.chart;
+          const idx = legendItem.datasetIndex;
+          const visible = !chart.isDatasetVisible(idx);
+          chart.setDatasetVisibility(idx, visible);
+          if (chart.data.datasets[idx].label === "Load power avg (W)") {
+            chart.data.datasets.forEach((d, i) => {
+              if (d.label === "_power_max" || d.label === "_power_min") {
+                chart.setDatasetVisibility(i, visible);
+              }
+            });
+          }
+          chart.update();
+        },
+      },
+      tooltip: {
+        filter: item => !item.dataset.label.startsWith("_"),
+        callbacks: {
+          // Alert points carry their own category/message rather than a
+          // plain numeric y value - show those instead of the stack index,
+          // which is only a layout detail with no meaning of its own.
+          label(context) {
+            if (context.dataset.yAxisID === "yAlerts") {
+              const p = context.raw;
+              return `[${p.category}] ${p.message}`;
+            }
+            return `${context.dataset.label}: ${context.formattedValue}`;
+          },
+        },
+      },
+      zoom: {
+        zoom: {
+          drag: { enabled: true, backgroundColor: "rgba(37, 99, 235, 0.15)" },
+          wheel: { enabled: true },
+          mode: "x",
+        },
+        pan: { enabled: true, mode: "x", modifierKey: "shift" },
+        limits: { x: { min: "original", max: "original" } },
+      },
+    },
+  },
+});
+}
+
+// Day-level x-axis shared by both gnssrefl charts below: points span
+// multiple days (see parsers.get_gnss_quality_series), not a continuous
+// high-rate series like the station overview chart above. A factory (not
+// a shared object) because Chart.js writes computed state back onto
+// whatever scale config object you pass it - reusing one instance across
+// two Chart()s would let one chart's axis state leak into the other's.
+//
+// No fixed time.unit: with one hardcoded (e.g. "day"), zooming into a
+// single day still only offers day-aligned tick candidates formatted as
+// "MM-dd" - all of them fall outside the zoomed range or collapse to one
+// tick, so the axis goes blank. Leaving unit unset lets Chart.js pick the
+// coarsest unit that still yields enough ticks for the *current* zoom
+// range, stepping down through the units listed in displayFormats (day ->
+// hour -> minute) as you zoom in.
+const makeDayAxis = () => ({
+  type: "time",
+  time: {
+    displayFormats: { day: "MM-dd", hour: "MM-dd HH:mm", minute: "HH:mm" },
+    tooltipFormat: "yyyy-MM-dd HH:mm",
+  },
+  ticks: { autoSkip: true, maxTicksLimit: 12 },
+});
+
+// One dot per satellite arc (a single rise or set), one series per
+// (constellation, frequency) combination - e.g. "GPS L1" and "GPS L2C"
+// are separate legend entries, shaded variants of that constellation's
+// base color - the same style as gnssrefl's own real-time demos
+// (stream2snr), rather than a per-day average. Y axis is inverted: a
+// *larger* RH value sits lower on the plot, matching the convention that
+// a taller reflector height means the antenna is more elevated above
+// what it's reflecting off.
+const SYSTEM_PALETTE = {
+  gps: ["#1d4ed8", "#60a5fa", "#1e3a8a"],
+  glonass: ["#b91c1c", "#f87171", "#7f1d1d"],
+  galileo: ["#15803d", "#4ade80", "#166534", "#86efac", "#052e16"],
+  beidou: ["#b45309", "#fbbf24", "#78350f", "#fde68a", "#f97316"],
+};
+const SYSTEM_ORDER = ["gps", "glonass", "galileo", "beidou"];
+
+// Points render at less than full opacity so the solid black smoothed
+// line (see redrawOnTop below) reads more clearly against them,
+// even where a point's own edge anti-aliasing overlaps the line's.
+const POINT_ALPHA = 0.6;
+function withAlpha(hex, alpha) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+// Centered *time*-windowed average of whatever set of arcs is passed in -
+// used both for the initial "everything" view and to recompute the
+// smoothed line from just the currently legend-visible series (see
+// gnssQualityLegendClick below). Arcs don't arrive at an even cadence -
+// satellites rise/set in bursts across constellations, then leave gaps -
+// so windowing by a fixed *count* of neighbors let the effective time
+// span balloon during sparse stretches and shrink to almost nothing
+// during bursts, which is what made an earlier version of this line look
+// noisy rather than smooth. Windowing by elapsed time instead keeps the
+// smoothing span consistent regardless of how many arcs happen to be
+// nearby. Two-pointer sweep assumes points is already chronological (true
+// of gnssQualitySeries and any filtered subset of it).
+const SMOOTH_WINDOW_MS = 90 * 60 * 1000; // +/-90 min
+function computeSmoothedRh(points) {
+  const times = points.map(p => Date.parse(p.t));
+  const out = [];
+  let lo = 0, hi = 0, sum = 0;
+  for (let i = 0; i < points.length; i++) {
+    while (hi < points.length && times[hi] <= times[i] + SMOOTH_WINDOW_MS) {
+      sum += points[hi].rh_m;
+      hi++;
+    }
+    while (lo < points.length && times[lo] < times[i] - SMOOTH_WINDOW_MS) {
+      sum -= points[lo].rh_m;
+      lo++;
+    }
+    // orbit_source rides along per point (see parsers.get_gnss_quality_series)
+    // so the line can be styled per-segment below by which orbit computed
+    // the RH there - the smoothing window doesn't change which source
+    // "owns" a given point, just its RH value.
+    out.push({ x: toNaive(points[i].t_display), y: sum / (hi - lo), orbitSource: points[i].orbit_source });
+  }
+  return out;
+}
+
+// --- Filters (satellite / direction / elevation) --------------------------
+// Applied client-side to gnssQualitySeries before it's grouped into
+// per-constellation datasets below - everything downstream (constellation
+// coloring, legend-driven show/hide, smoothed-line recompute) already
+// operates on "whatever series was passed in", so narrowing that series
+// first is enough to make the rest of the existing chart logic filter-aware
+// without changing it. Same approach and mostly-identical logic to
+// compare.html's filter panel - kept as an independent copy since this is
+// a separate page.
+// Three-level constellation -> satellite / frequency band cascade (rather
+// than one flat "108 satellites" dropdown - too fine-grained to scan).
+// Satellite and band are siblings, not a strict drill-down through each
+// other - both are independently scoped to whatever constellation is
+// currently selected (see the wiring below), so "GPS + L1" and "GPS + Sat
+// 5" and "GPS + Sat 5 + L1" are all reachable without an artificial
+// requirement to pick one before the other.
+function populateConstellationFilter() {
+  const sel = document.getElementById("filter-constellation");
+  if (!sel) return;
+  const seen = new Set(gnssQualitySeries.map(p => p.system));
+  const systems = SYSTEM_ORDER.filter(s => seen.has(s));
+  sel.innerHTML = `<option value="">ALL</option>` + systems.map(s => `<option value="${s}">${s.toUpperCase()}</option>`).join("");
+}
+
+function populateSatFilter(constellation) {
+  const sel = document.getElementById("filter-sat");
+  if (!sel) return;
+  const prior = sel.value;
+  const sats = new Set(
+    gnssQualitySeries
+      .filter(p => !constellation || p.system === constellation)
+      .map(p => p.sat));
+  const sorted = [...sats].sort((a, b) => a - b);
+  sel.innerHTML = `<option value="">ALL</option>` + sorted.map(s => `<option value="${s}">${s}</option>`).join("");
+  sel.disabled = !constellation;
+  // Only preserve the prior satellite selection when narrowing to a
+  // *specific* constellation (e.g. switching GPS -> GLONASS while a
+  // same-numbered satellite happens to still be valid). Widening back to
+  // ALL should always reset to ALL, even though the old satellite number
+  // technically still appears somewhere in the unscoped list - keeping it
+  // selected there reads as "clear filters didn't work".
+  sel.value = (constellation && sorted.includes(Number(prior))) ? prior : "";
+}
+
+function populateBandFilter(constellation) {
+  const sel = document.getElementById("filter-band");
+  if (!sel) return;
+  const prior = sel.value;
+  const seen = new Map(); // freq_label -> freq (for sort order)
+  for (const p of gnssQualitySeries) {
+    if (constellation && p.system !== constellation) continue;
+    if (!seen.has(p.freq_label)) seen.set(p.freq_label, p.freq);
+  }
+  const labels = [...seen.keys()].sort((a, b) => seen.get(a) - seen.get(b));
+  sel.innerHTML = `<option value="">ALL</option>` + labels.map(l => `<option value="${l}">${l}</option>`).join("");
+  sel.disabled = !constellation;
+  // Same reasoning as populateSatFilter: only preserve across a narrowing
+  // change, always reset when widening back to ALL.
+  sel.value = (constellation && labels.includes(prior)) ? prior : "";
+}
+
+function azimuthInRange(azimuth, center, halfWidth) {
+  const diff = Math.abs(((azimuth - center + 540) % 360) - 180);
+  return diff <= halfWidth;
+}
+
+function currentGnssFilters() {
+  const constellation = document.getElementById("filter-constellation").value;
+  const satValue = document.getElementById("filter-sat").value;
+  const bandValue = document.getElementById("filter-band").value;
+  const azDir = document.getElementById("filter-az-dir").value;
+  const azWidth = parseFloat(document.getElementById("filter-az-width").value);
+  const elMinRaw = document.getElementById("filter-el-min").value;
+  const elMaxRaw = document.getElementById("filter-el-max").value;
+  return {
+    constellation: constellation === "" ? null : constellation,
+    sat: satValue === "" ? null : Number(satValue),
+    band: bandValue === "" ? null : bandValue,
+    azCenter: azDir === "" ? null : parseFloat(azDir),
+    azWidth: Number.isFinite(azWidth) ? azWidth : 30,
+    elMin: elMinRaw === "" ? null : parseFloat(elMinRaw),
+    elMax: elMaxRaw === "" ? null : parseFloat(elMaxRaw),
+  };
+}
+
+// Returns null if p passes, or a short reason string if not - "no
+// elevation data" is distinguished from "genuinely outside the elevation
+// filter" so the hidden-point count below the chart can explain itself.
+function gnssFilterReject(p, f) {
+  if (f.constellation !== null && p.system !== f.constellation) return "constellation";
+  if (f.sat !== null && p.sat !== f.sat) return "sat";
+  if (f.band !== null && p.freq_label !== f.band) return "band";
+  if (f.azCenter !== null && !azimuthInRange(p.azimuth_deg, f.azCenter, f.azWidth)) return "azimuth";
+  if (f.elMin !== null || f.elMax !== null) {
+    if (p.elevation_min_deg === undefined || p.elevation_max_deg === undefined) return "no-elevation-data";
+    const lo = f.elMin === null ? -Infinity : f.elMin;
+    const hi = f.elMax === null ? Infinity : f.elMax;
+    if (p.elevation_max_deg < lo || p.elevation_min_deg > hi) return "elevation";
+  }
+  return null;
+}
+
+function buildGnssQualityChart(filteredSeries) {
+  const byKey = {}; // "system|freq_label" -> arc points
+  for (const p of filteredSeries) {
+    (byKey[`${p.system}|${p.freq_label}`] ??= []).push(p);
+  }
+  const keys = Object.keys(byKey).sort((a, b) => {
+    const [sysA, freqA] = a.split("|"), [sysB, freqB] = b.split("|");
+    const orderDiff = SYSTEM_ORDER.indexOf(sysA) - SYSTEM_ORDER.indexOf(sysB);
+    return orderDiff !== 0 ? orderDiff : freqA.localeCompare(freqB);
+  });
+  const seenPerSystem = {};
+  const SMOOTHED_LABEL = "Smoothed RH";
+  const TOTAL_ARCS_LABEL = "Total arcs received";
+
+  // Chart.js's dataset "order" only controls the sort it feeds into its
+  // own draw loop, and that still wasn't enough to keep these two lines
+  // clear of the point cloud / background bars in practice. This forces
+  // the point: after Chart.js finishes its normal pass over every
+  // dataset, explicitly re-run each of these two controllers' draw() once
+  // more, so they're unconditionally the last ink laid down regardless of
+  // dataset order.
+  const ON_TOP_LABELS = [SMOOTHED_LABEL, TOTAL_ARCS_LABEL];
+  const redrawOnTop = {
+    id: "redrawOnTop",
+    afterDatasetsDraw(chart) {
+      for (const label of ON_TOP_LABELS) {
+        const idx = chart.data.datasets.findIndex(d => d.label === label);
+        if (idx === -1) continue;
+        const meta = chart.getDatasetMeta(idx);
+        if (!meta.hidden) meta.controller.draw();
+      }
+    },
+  };
+
+  // Pale background bars along the bottom (see the hidden, oversized
+  // "yArcCount" scale below): each day's raw candidate arc count, split
+  // into how much survived gnssir's QC (colored by constellation, same
+  // hues as that system's points above but washed out) versus how much
+  // got rejected (gray). Low alpha rather than the point-cloud's own
+  // colors so this reads as context, not another data series competing
+  // for attention - and it shares this same chart/x-axis/zoom state
+  // rather than being a separate chart, so it always lines up with
+  // exactly the RH points currently in view.
+  const ARC_COUNT_COLOR = {
+    gps: "rgba(29, 78, 216, 0.18)", glonass: "rgba(185, 28, 28, 0.18)",
+    galileo: "rgba(21, 128, 61, 0.18)", beidou: "rgba(180, 83, 9, 0.18)",
+  };
+  const ARC_COUNT_NAME = { gps: "GPS", glonass: "GLONASS", galileo: "Galileo", beidou: "BeiDou", rejected: "Rejected (failed QC)" };
+  const maxDailyArcTotal = Math.max(1, ...gnssDailyArcCounts.map(d =>
+    Object.values(d.kept).reduce((a, b) => a + b, 0) + d.rejected_total));
+  const arcCountDatasets = gnssDailyArcCounts.length ? [
+    ...SYSTEM_ORDER.map(system => ({
+      type: "bar",
+      label: `_ArcCount_${system}`,
+      data: gnssDailyArcCounts.map(d => ({ x: toNaive(d.t_display), y: d.kept[system] || 0 })),
+      backgroundColor: ARC_COUNT_COLOR[system],
+      stack: "arcCount", yAxisID: "yArcCount",
+      barPercentage: 0.9, categoryPercentage: 0.95,
+    })),
+    {
+      type: "bar",
+      label: "_ArcCount_rejected",
+      data: gnssDailyArcCounts.map(d => ({ x: toNaive(d.t_display), y: d.rejected_total })),
+      backgroundColor: "rgba(107, 114, 128, 0.18)",
+      stack: "arcCount", yAxisID: "yArcCount",
+      barPercentage: 0.9, categoryPercentage: 0.95,
+    },
+    // Total raw candidate arcs per day (kept + rejected) - unsmoothed
+    // (tension 0, straight segments day to day) so it reads as the
+    // actual daily count, not a trend - riding the same oversized
+    // "yArcCount" axis as the bars below it, so the line runs right
+    // along the top of each day's bar stack.
+    {
+      type: "line",
+      label: TOTAL_ARCS_LABEL,
+      data: gnssDailyArcCounts.map(d => ({
+        x: toNaive(d.t_display),
+        y: Object.values(d.kept).reduce((a, b) => a + b, 0) + d.rejected_total,
+      })),
+      borderColor: "#7dd3fc", backgroundColor: "#7dd3fc", borderWidth: 2,
+      pointRadius: 3, tension: 0, fill: false,
+      yAxisID: "yArcCount",
+    },
+  ] : [];
+
+  if (gnssQualityChart) gnssQualityChart.destroy();
+  gnssQualityChart = new Chart(document.getElementById("chart-gnss-quality"), {
+    type: "scatter",
+    plugins: [redrawOnTop],
+    data: {
+      datasets: [
+        // First in the array = drawn first = sits behind the RH points
+        // (the total-arcs line and smoothed line both also get an
+        // explicit forced redraw on top - see redrawOnTop - for full
+        // certainty there).
+        ...arcCountDatasets,
+        ...keys.map(key => {
+          const [system, freqLabel] = key.split("|");
+          const paletteIdx = (seenPerSystem[system] ??= 0);
+          seenPerSystem[system]++;
+          const palette = SYSTEM_PALETTE[system] || ["#6b7280"];
+          return {
+            label: freqLabel,
+            _key: key,
+            data: byKey[key].map(p => ({
+              x: toNaive(p.t_display), y: p.rh_m,
+              sat: p.sat, amplitude: p.amplitude, peak2noise: p.peak2noise,
+              azimuth_deg: p.azimuth_deg,
+              date: p.t.slice(0, 10), arcKey: p.arc_key,
+            })),
+            backgroundColor: withAlpha(palette[paletteIdx % palette.length], POINT_ALPHA),
+            pointRadius: 3, pointHoverRadius: 5,
+          };
+        }),
+        {
+          type: "line",
+          label: SMOOTHED_LABEL,
+          data: computeSmoothedRh(filteredSeries),
+          // Plain black - redrawOnTop above is what actually
+          // keeps it visible through the point cloud; the color just
+          // needs to read clearly against it once it is, and a vivid hue
+          // competing with the constellation colors turned out busier
+          // than helpful. Stretches computed from the GPS-only nav
+          // fallback (rather than the full multi-GNSS gbm orbit - see
+          // gnssrefl_pipeline.py's module docstring) are flagged dark
+          // purple instead, since they're the less-trustworthy,
+          // temporary-until-gbm-publishes kind of result.
+          borderColor: "#000000", borderWidth: 2, pointRadius: 0, tension: 0.2, fill: false,
+          segment: {
+            borderColor: (ctx) => {
+              const raw = ctx.chart.data.datasets[ctx.datasetIndex].data[ctx.p1DataIndex];
+              return raw && raw.orbitSource === "nav" ? "#5b21b6" : "#000000";
+            },
+          },
+        },
+      ],
+    },
+    options: {
+      animation: false,
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "nearest", intersect: true },
+      // Click a single arc's point -> popup its raw SNR/elevation curve
+      // and Lomb-Scargle periodogram (see openArcDetail below), the same
+      // two-panel view gnssrefl's own -plt diagnostics show for one arc.
+      onClick(event, elements, chart) {
+        if (!elements.length) return;
+        const el = elements[0];
+        const ds = chart.data.datasets[el.datasetIndex];
+        if (ds.label === SMOOTHED_LABEL || ds.label === TOTAL_ARCS_LABEL || ds.label.startsWith("_ArcCount_")) return;
+        openArcDetail(ds.data[el.index], ds.label);
+      },
+      scales: {
+        x: makeDayAxis(),
+        y: { reverse: true, title: { display: true, text: "Reflector height (m)" } },
+        // Hidden and oversized (5x the busiest day's arc total) so the
+        // real bars - see arcCountDatasets above - only ever occupy the
+        // bottom ~20% of the plot, reading as a background band along
+        // the x-axis rather than a full-height chart of their own. Same
+        // trick the overview chart's own "yAlerts" axis uses to confine
+        // its markers to a strip near the bottom.
+        yArcCount: { display: false, min: 0, max: maxDailyArcTotal * 5 },
+      },
+      plugins: {
+        // The legend's old job (show/hide a constellation/frequency
+        // series, with the smoothed line recomputed to match) is now the
+        // constellation filter's job instead - narrowing the underlying
+        // series before it ever reaches this chart, rather than toggling
+        // visibility on an already-built one. Two controls for the same
+        // thing was more confusing than useful, so the legend is just a
+        // static (non-interactive) reference now - point color still maps
+        // to constellation/frequency, but clicking a label no longer does
+        // anything.
+        legend: {
+          position: "bottom",
+          labels: { filter: item => !item.text.startsWith("_") },
+          // Without an explicit no-op here, Chart.js falls back to its
+          // own default onClick (still toggles the clicked dataset's
+          // visibility) - silently leaving a half-working, unsynced
+          // version of the old behavior rather than truly removing it.
+          onClick: () => {},
+        },
+        tooltip: {
+          callbacks: {
+            label(context) {
+              if (context.dataset.label === SMOOTHED_LABEL) {
+                return `Smoothed RH: ${context.parsed.y.toFixed(2)} m`;
+              }
+              if (context.dataset.label === TOTAL_ARCS_LABEL) {
+                return `${TOTAL_ARCS_LABEL}: ${context.parsed.y}`;
+              }
+              if (context.dataset.label.startsWith("_ArcCount_")) {
+                const name = context.dataset.label.replace("_ArcCount_", "");
+                return `${ARC_COUNT_NAME[name] || name}: ${context.parsed.y} arcs`;
+              }
+              const p = context.raw;
+              const base = `${context.dataset.label} sat ${p.sat}: RH ${p.y.toFixed(2)} m, Amp ${p.amplitude}, Pk/Noise ${p.peak2noise}`;
+              return p.arcKey ? `${base} (click for detail)` : base;
+            },
+          },
+        },
+        // Same interaction model as the overview chart's zoom plugin (see
+        // allChart above): drag or wheel to zoom into a time range,
+        // Shift+drag to pan, "Reset zoom" button to restore the full range.
+        zoom: {
+          zoom: {
+            drag: { enabled: true, backgroundColor: "rgba(37, 99, 235, 0.15)" },
+            wheel: { enabled: true },
+            mode: "x",
+          },
+          pan: { enabled: true, mode: "x", modifierKey: "shift" },
+          limits: { x: { min: "original", max: "original" } },
+        },
+      },
+    },
+  });
+}
+
+if (gnssQualitySeries.length) {
+  populateConstellationFilter();
+  populateSatFilter(null);
+  populateBandFilter(null);
+  buildGnssQualityChart(gnssQualitySeries);
+
+  function rebuildGnssQualityChart() {
+    const filters = currentGnssFilters();
+    const kept = [];
+    let hiddenNoElevation = 0;
+    for (const p of gnssQualitySeries) {
+      const reason = gnssFilterReject(p, filters);
+      if (reason === null) kept.push(p);
+      else if (reason === "no-elevation-data") hiddenNoElevation++;
+    }
+    buildGnssQualityChart(kept);
+
+    const summary = { total_arcs: kept.length, by_system: {} };
+    const satellites = new Set();
+    for (const p of kept) {
+      summary.by_system[p.system] = (summary.by_system[p.system] || 0) + 1;
+      satellites.add(`${p.system}|${p.sat}`);
+    }
+    const bySystemText = Object.entries(summary.by_system).map(([sys, n]) => `${sys} ${n}`).join(", ");
+    let text = `${satellites.size} satellites tracked | ${summary.total_arcs} arcs (${bySystemText})`;
+    if (hiddenNoElevation > 0) {
+      text += ` - ${hiddenNoElevation} more hidden (no elevation data cached yet, needs reprocessing)`;
+    }
+    document.getElementById("filter-hint").textContent = text;
+  }
+
+  document.getElementById("filter-constellation").addEventListener("change", (e) => {
+    populateSatFilter(e.target.value || null);
+    populateBandFilter(e.target.value || null);
+    rebuildGnssQualityChart();
+  });
+  for (const id of ["filter-sat", "filter-band", "filter-az-dir", "filter-az-width", "filter-el-min", "filter-el-max"]) {
+    document.getElementById(id).addEventListener("change", rebuildGnssQualityChart);
+  }
+  document.getElementById("filter-az-width").addEventListener("input", rebuildGnssQualityChart);
+  document.getElementById("filter-el-min").addEventListener("input", rebuildGnssQualityChart);
+  document.getElementById("filter-el-max").addEventListener("input", rebuildGnssQualityChart);
+
+  window.clearGnssFilters = function () {
+    document.getElementById("filter-constellation").value = "";
+    populateSatFilter(null);
+    populateBandFilter(null);
+    document.getElementById("filter-az-dir").value = "";
+    document.getElementById("filter-az-width").value = "30";
+    document.getElementById("filter-el-min").value = "";
+    document.getElementById("filter-el-max").value = "";
+    rebuildGnssQualityChart();
+  };
+}
+
+// Two mini-charts inside the modal, matching gnssrefl's own -plt
+// diagnostic layout for a single arc: detrended SNR vs elevation angle on
+// top, the Lomb-Scargle periodogram (candidate reflector heights vs
+// spectral amplitude) below, whose peak is the RH value already shown on
+// the main scatter point. Both curves come from /gnss_arc_detail/<date>/
+// <key> (see app.py), precomputed by gnssrefl_arc_detail.py using
+// gnssrefl's own gps.strip_compute() - not reimplemented here.
+let arcRawChart, arcPeriodogramChart;
+
+async function openArcDetail(point, freqLabel) {
+  const modal = document.getElementById("arc-detail-modal");
+  const title = document.getElementById("arc-detail-title");
+  const status = document.getElementById("arc-detail-status");
+  title.textContent = `${freqLabel} sat ${point.sat} - RH ${point.y.toFixed(2)} m`;
+  status.textContent = "";
+  modal.hidden = false;
+
+  if (!point.arcKey) {
+    status.textContent = "No raw-arc detail cached for this point - re-run GNSS-IR analysis to backfill it (older days need reprocessing to pick this up).";
+    if (arcRawChart) { arcRawChart.destroy(); arcRawChart = null; }
+    if (arcPeriodogramChart) { arcPeriodogramChart.destroy(); arcPeriodogramChart = null; }
+    return;
+  }
+
+  let detail;
+  try {
+    const r = await fetch(`/gnss_arc_detail/${point.date}/${point.arcKey}?station=${encodeURIComponent(hostname)}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    detail = await r.json();
+  } catch (e) {
+    status.textContent = "Couldn't load arc detail: " + e.message;
+    return;
+  }
+
+  if (arcRawChart) arcRawChart.destroy();
+  arcRawChart = new Chart(document.getElementById("chart-arc-raw"), {
+    type: "line",
+    data: {
+      datasets: [{
+        label: "Detrended SNR",
+        data: detail.elevation_deg.map((e, i) => ({ x: e, y: detail.dsnr[i] })),
+        borderColor: "#2563eb", pointRadius: 0, borderWidth: 1.5, tension: 0,
+      }],
+    },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { type: "linear", title: { display: true, text: "Elevation angle (deg)" } },
+        y: { title: { display: true, text: "volts/volts" } },
+      },
+      plugins: { legend: { display: false }, title: { display: true, text: "Raw data", font: { size: 12 } } },
+    },
+  });
+
+  if (arcPeriodogramChart) arcPeriodogramChart.destroy();
+  const peakIdx = detail.periodogram_amplitude.reduce(
+    (best, v, i) => (v > detail.periodogram_amplitude[best] ? i : best), 0);
+  arcPeriodogramChart = new Chart(document.getElementById("chart-arc-periodogram"), {
+    type: "line",
+    data: {
+      datasets: [
+        {
+          label: "Periodogram",
+          data: detail.periodogram_rh_m.map((rh, i) => ({ x: rh, y: detail.periodogram_amplitude[i] })),
+          borderColor: "#16a34a", pointRadius: 0, borderWidth: 1.5, tension: 0.1,
+        },
+        {
+          label: "Peak (RH)",
+          data: [{ x: detail.periodogram_rh_m[peakIdx], y: detail.periodogram_amplitude[peakIdx] }],
+          borderColor: "#dc2626", backgroundColor: "#dc2626", pointRadius: 5, showLine: false,
+        },
+      ],
+    },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { type: "linear", title: { display: true, text: "Reflector height (m)" } },
+        y: { title: { display: true, text: "volts/volts" } },
+      },
+      plugins: { legend: { display: false }, title: { display: true, text: "Periodogram", font: { size: 12 } } },
+    },
+  });
+}
+
+function closeArcDetail() {
+  document.getElementById("arc-detail-modal").hidden = true;
+}
+
+// "Force full reprocess" lives in the gnssrefl form but also governs the
+// Sync form (see config.py's SYNC_WINDOW_DAYS / SYNC_FULL_TIMEOUT_SECONDS) -
+// a plain HTML input can only belong to one <form>, so mirror its checked
+// state into the sync form's own hidden "force" field right before it
+// submits, rather than duplicating the checkbox.
+document.getElementById("sync-form").addEventListener("submit", () => {
+  document.getElementById("sync-force-input").value =
+    document.getElementById("force-reprocess-checkbox").checked ? "1" : "0";
+});
+
+// Polls /gnssrefl_status while a background analysis run is in flight (see
+// app.py's /refresh_gnssrefl) and reloads the page once it finishes, so
+// the new gnssrefl charts pick up the run's results without the user
+// having to remember to refresh manually.
+(function pollGnssreflStatus() {
+  const btn = document.getElementById("gnssrefl-run-btn");
+  const text = document.getElementById("gnssrefl-status-text");
+  if (!btn.disabled) return;
+  text.textContent = "GNSS-IR analysis running...";
+  const timer = setInterval(async () => {
+    try {
+      const r = await fetch("{{ url_for('gnssrefl_status_json', station=hostname) }}");
+      const s = await r.json();
+      if (!s.running) {
+        clearInterval(timer);
+        window.location.reload();
+      }
+    } catch (e) {
+      clearInterval(timer);
+    }
+  }, 5000);
+})();
+</script>
+</body>
+</html>

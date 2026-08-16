@@ -1,0 +1,53 @@
+# Separate environment for the GNSS-IR pipeline (gnssrefl_pipeline.py).
+# Kept apart from environment.yml's "rtk" env deliberately: gnssrefl pulls
+# in a heavy scientific stack (numpy/scipy/astropy/jupyterlab/...) that the
+# Flask app itself never imports - app.py only ever shells out to this
+# env's console-script executables (rinex2snr.exe, gnssir.exe, vwc.exe,
+# ...), the same way rclone_sync.py shells out to a standalone rclone
+# binary rather than linking against it. Keeping the two environments
+# separate means the dashboard stays cheap to install even if gnssrefl's
+# dependency set changes.
+#
+# Usage:
+#   mamba env create -f environment-gnssrefl.yml   (or: conda env create -f ...)
+#
+# Also required, all invoked by bare filename so they must be on PATH
+# (see gnssrefl_pipeline.py):
+#   - RTKLIB's convbin(.exe) - UBX -> RINEX conversion
+#     https://rtklib.com/
+#   - 7z(.exe) (7-Zip) - extracting the .7z archives rclone_sync.py syncs
+#   - gzip(.exe) - rinex2snr compresses its own SNR output with this
+#   - gunzip(.exe) - a REAL one; see the Windows gotcha below
+#
+# Windows gotcha - a working gunzip(.exe) matters more than it looks:
+# gnssrefl downloads its own orbit files as .gz and shells out to a bare
+# `gunzip` to decompress them (gps.py, dozens of call sites). On Windows,
+# Git for Windows' gzip.exe does not implement the classic Unix "behave as
+# gunzip when invoked under that name" dispatch, so a naive `copy gzip.exe
+# gunzip.exe` silently no-ops ("already has .gz suffix -- unchanged")
+# instead of decompressing - and because gnssrefl's own orbit-fetching
+# functions report success regardless, this fails *silently*: no error,
+# just permanently-missing multi-GNSS orbits (GLONASS/Galileo arcs quietly
+# vanish; GPS-only broadcast nav still works since it never needs
+# decompression). tools/gunzip.cs in this repo is a ~20-line real
+# decompressor that fixes this. Build and install it once per machine:
+#   csc.exe /nologo /out:"<some-dir-on-PATH>\gunzip.exe" tools\gunzip.cs
+# csc.exe ships with .NET Framework, typically at
+# C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe - no separate
+# install needed. Put the output in a directory already on your real
+# (not just a shell's) PATH - e.g. this env's root
+# (%CONDA_PREFIX%\envs\gnssrefl\gunzip.exe) works well since it's on PATH
+# for the same reason rinex2snr.exe etc. are.
+# gnssrefl itself needs three environment variables set (see config.py's
+# REFL_CODE/ORBITS/EXE_DIR, which default to matching values if these
+# aren't set): REFL_CODE, ORBITS, EXE - pointing at a working directory
+# gnssrefl can grow into (SNR files, daily results, orbit/nav cache). It
+# does not need to be inside this repo.
+name: gnssrefl
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+    - gnssrefl

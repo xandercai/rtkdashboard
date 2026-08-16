@@ -1,0 +1,14 @@
+cache/
+__pycache__/
+*.pyc
+venv/
+.env
+
+# IDE
+.idea/
+.vscode/
+
+# Local dev-server logs (see how app.py is normally launched - these are
+# just redirected stdout/stderr from ad-hoc background runs, not app output
+# meant to be read from disk)
+*.log
