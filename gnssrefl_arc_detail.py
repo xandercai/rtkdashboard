@@ -27,7 +27,7 @@ import sys
 
 import numpy as np
 from gnssrefl import gps as g
-from gnssrefl.gnss_frequencies import get_file_suffix, get_scale_factor
+from gnssrefl.gnss_frequencies import get_file_suffix, get_scale_factor, get_wavelength
 
 # Captures the constellation+band suffix (group 2, e.g. "G_L1") along with
 # satellite/azimuth/time - this needs to be an exact match against
@@ -51,6 +51,65 @@ def _decimate(*arrays):
     n = len(arrays[0])
     step = max(1, n // _MAX_POINTS)
     return [np.round(a[::step], 4).tolist() for a in arrays]
+
+
+def _fit_multipath(elevation, dsnr, cf, rh_m):
+    """Least-squares fit of the classic single-reflector multipath model
+    dSNR = A*sin(2*pi*(RH/cf)*sin(e) + phi) with RH pinned to the
+    periodogram's own peak (so the fit shows how well *that* RH explains
+    the data, rather than re-deriving a new one). Linear in (a, b) =
+    (A*cos(phi), A*sin(phi)), so a plain lstsq - no iteration. Returns
+    (model, amplitude, phase_deg, r2); r2 is the fraction of dSNR variance
+    the sinusoid explains (0 = no better than a flat line)."""
+    arg = 2 * np.pi * (rh_m / cf) * np.sin(np.radians(elevation))
+    basis = np.column_stack((np.sin(arg), np.cos(arg)))
+    (a, b), *_ = np.linalg.lstsq(basis, dsnr, rcond=None)
+    model = basis @ np.array([a, b])
+    ss_tot = float(np.sum((dsnr - dsnr.mean()) ** 2))
+    r2 = 1 - float(np.sum((dsnr - model) ** 2)) / ss_tot if ss_tot > 0 else 0.0
+    return model, float(np.hypot(a, b)), float(np.degrees(np.arctan2(b, a))), r2
+
+
+# First Fresnel zone on a horizontal reflector - same geometry as
+# gnssrefl's own refl_zones.FresnelZone (Larson & Nievinski 2013,
+# appendix). Reimplemented rather than imported: refl_zones pulls in
+# wget/simplekml at import time, neither of which this needs.
+_FRESNEL_ELLIPSE_POINTS = 48
+_FRESNEL_ZONE_COUNT = 5
+
+
+def _fresnel_geometry(wavelength, h, azimuth_deg, emin, emax):
+    """Plan-view (east/north metres from the antenna) first-Fresnel-zone
+    ellipses at _FRESNEL_ZONE_COUNT elevations spanning the arc's observed
+    range, plus the specular reflection point's ground track across that
+    range. An arc's azimuth drifts a few degrees while the satellite
+    moves, but the SNR arc file has no per-sample azimuth - the single
+    arc-level azimuth from the results file is used throughout, the same
+    simplification gnssrefl's own zone maps make."""
+    az = np.radians(azimuth_deg)
+    delta = wavelength / 2
+    t = np.linspace(0, 2 * np.pi, _FRESNEL_ELLIPSE_POINTS)
+
+    def ellipse(e_deg):
+        s = np.sin(np.radians(e_deg))
+        b = np.sqrt(2 * delta * h / s + (delta / s) ** 2)
+        a = b / s
+        centre = (h + delta / s) / np.tan(np.radians(e_deg))
+        u = centre + a * np.cos(t)  # along the satellite azimuth
+        v = b * np.sin(t)           # perpendicular to it
+        return {
+            "elevation_deg": round(float(e_deg), 1),
+            "east_m": np.round(u * np.sin(az) + v * np.cos(az), 2).tolist(),
+            "north_m": np.round(u * np.cos(az) - v * np.sin(az), 2).tolist(),
+        }
+
+    track_e = np.linspace(emin, emax, 30)
+    track_d = h / np.tan(np.radians(track_e))
+    return {
+        "ellipses": [ellipse(e) for e in np.linspace(emin, emax, _FRESNEL_ZONE_COUNT)],
+        "specular_east_m": np.round(track_d * np.sin(az), 2).tolist(),
+        "specular_north_m": np.round(track_d * np.cos(az), 2).tolist(),
+    }
 
 
 def _index_arc_files(arcs_dir):
@@ -131,8 +190,11 @@ def main():
         if len(px) == 0:
             continue
 
-        elevation_out, dsnr_out = _decimate(elevation, dsnr)
+        model, fit_amp, fit_phase, fit_r2 = _fit_multipath(elevation, dsnr, cf, maxF)
+        elevation_out, dsnr_out, model_out = _decimate(elevation, dsnr, model)
         rh_grid_out, amplitude_out = _decimate(px, pz)
+        fresnel = _fresnel_geometry(
+            get_wavelength(freq, sat), maxF, arc["azimuth_deg"], float(elevation.min()), float(elevation.max()))
 
         key = f"{sat}_{freq}_{az}_{hh:02d}{mm:02d}"
         arc["arc_key"] = key
@@ -141,6 +203,9 @@ def main():
                 "sat": sat, "system": arc["system"], "freq_label": arc["freq_label"],
                 "rh_m": arc["rh_m"], "azimuth_deg": arc["azimuth_deg"],
                 "elevation_deg": elevation_out, "dsnr": dsnr_out,
+                "fit_dsnr": model_out, "fit_rh_m": round(float(maxF), 3),
+                "fit_amplitude": round(fit_amp, 3), "fit_phase_deg": round(fit_phase, 1),
+                "fit_r2": round(fit_r2, 3), "fresnel": fresnel,
                 "periodogram_rh_m": rh_grid_out, "periodogram_amplitude": amplitude_out,
             }, f)
 

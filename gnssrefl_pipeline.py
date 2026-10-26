@@ -1,12 +1,13 @@
-# Turns the raw .ubx files rclone_sync.py already pulls into the "gnss"
-# cache into two things gnssrefl (https://github.com/kristinemlarson/gnssrefl)
+# Turns the raw GNSS files rclone_sync.py already pulls into the "gnss"
+# cache (.ubx from a u-blox F9P, .rtcm3 from a Unicore UM980 - see
+# _RAW_FORMATS) into two things gnssrefl (https://github.com/kristinemlarson/gnssrefl)
 # can compute from GNSS interferometric reflectometry:
 #
 #   - a per-day GNSS signal-quality summary (cache/gnss_quality/*.json)
 #   - a rolling soil-moisture (volumetric water content) time series
 #     (cache/soil_moisture/*.json)
 #
-# Pipeline per calendar day (UTC): merge that day's 2-hourly .ubx files ->
+# Pipeline per calendar day (UTC): merge that day's 2-hourly raw files ->
 # convert to RINEX with RTKLIB's convbin -> gnssrefl's rinex2snr ->
 # gnssrefl's gnssir -> aggregate the results file into one JSON record.
 # Soil moisture is recomputed from the accumulated history each run via
@@ -29,7 +30,7 @@
 # results for all four instead of GPS only - but it lags real time by ~2
 # days (see _run_rinex2snr_with_fallback), too slow for "as of today". So
 # every day is tried with gbm first and falls back to the GPS-only
-# broadcast nav message extracted from the station's own .ubx file (-orb
+# broadcast nav message extracted from the station's own raw file (-orb
 # nav, seeded via _seed_local_nav so no external download is needed at
 # all) when gbm isn't published yet. _select_dates_to_process() cheaply
 # re-checks gbm availability for nav-only days on later runs (see
@@ -55,6 +56,16 @@ logger = logging.getLogger(__name__)
 
 _FILENAME_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})_GNSS")
 
+# Raw file extension inside each .7z -> convbin's -r input format. rtkbase's
+# archive_and_clean.sh names the extension after the station's
+# receiver_format, so the extension alone says which receiver wrote it - a
+# station that swaps an F9P for a UM980 keeps working without any config
+# change here.
+_RAW_FORMATS = {
+    "ubx": "ubx",      # u-blox F9P, RXM-RAWX
+    "rtcm3": "rtcm3",  # Unicore UM980, RTCM3 MSM7 + ephemerides
+}
+
 # SNR file column layout gnssrefl writes (see rinex2snr): satellite,
 # elevation, azimuth, seconds-of-day, elev-rate, S6, S1, S2, S5, S7, S8.
 # All in dB-Hz except where noted. Only S1/S2 are populated for this
@@ -74,6 +85,7 @@ _RES_AMP_COL = 6
 _RES_EMIN_COL = 7
 _RES_EMAX_COL = 8
 _RES_FREQ_COL = 10
+_RES_RISE_COL = 11
 _RES_PK2NOISE_COL = 13
 
 # gnssir's frequency codes (see gnssir_input's -allfreq), grouped by GNSS
@@ -156,8 +168,8 @@ def _run(cmd, cwd, env, timeout=600):
 
 
 def _available_dates(hostname):
-    """UTC calendar dates (YYYY-MM-DD) that have at least one synced .ubx
-    archive, derived from the filename's own window-start timestamp - the
+    """UTC calendar dates (YYYY-MM-DD) that have at least one synced raw
+    GNSS archive, derived from the filename's own window-start timestamp - the
     same field get_data_size_series() falls back to when a file's mtime
     isn't available (see parsers.py)."""
     dates = set()
@@ -239,13 +251,18 @@ def _select_dates_to_process(hostname, dates, force, env):
     return sorted(set(to_process))
 
 
-def _extract_day_ubx(hostname, date_str, work_dir):
+def _extract_day_raw(hostname, date_str, work_dir):
     """7z-extracts every archive whose filename starts with date_str into
     work_dir, then concatenates them (sorted by filename, i.e. by the
-    window-start time each one covers) into one merged .ubx file. UBX is a
-    stream of self-delimited, checksummed messages, so concatenating whole
-    files in chronological order reconstructs the same stream the receiver
-    would have produced running continuously."""
+    window-start time each one covers) into one merged raw file. UBX and
+    RTCM3 are both streams of self-delimited, checksummed messages, so
+    concatenating whole files in chronological order reconstructs the same
+    stream the receiver would have produced running continuously.
+
+    Returns {"path", "format", "start"} (format is convbin's -r value,
+    start the first file's window-start time as a UTC datetime), or None.
+    A day holding both formats (the receiver was swapped that day) keeps
+    only whichever has more files - convbin reads one format per run."""
     archives = sorted(glob.glob(os.path.join(cache_dir_for("gnss", hostname), f"{date_str}_*.7z")))
     if not archives:
         return None
@@ -254,16 +271,42 @@ def _extract_day_ubx(hostname, date_str, work_dir):
             ["7z.exe", "e", "-y", f"-o{work_dir}", archive],
             capture_output=True, text=True, timeout=120, check=True,
         )
-    ubx_files = sorted(glob.glob(os.path.join(work_dir, f"{date_str}_*_GNSS.ubx")))
-    if not ubx_files:
+    by_ext = {}
+    for path in sorted(glob.glob(os.path.join(work_dir, f"{date_str}_*_GNSS.*"))):
+        ext = os.path.splitext(path)[1].lstrip(".").lower()
+        if ext in _RAW_FORMATS:
+            by_ext.setdefault(ext, []).append(path)
+    if not by_ext:
         return None
-    merged_path = os.path.join(work_dir, "merged.ubx")
+    ext = max(by_ext, key=lambda e: len(by_ext[e]))
+    if len(by_ext) > 1:
+        logger.warning("gnssrefl pipeline: %s/%s has mixed raw formats %s, using only .%s",
+                       hostname, date_str, sorted(by_ext), ext)
+    raw_files = by_ext[ext]
+    m = _FILENAME_RE.match(os.path.basename(raw_files[0]))
+    start = datetime(*map(int, m.groups()), tzinfo=timezone.utc)
+    merged_path = os.path.join(work_dir, f"merged.{ext}")
     with open(merged_path, "wb") as out:
-        for path in ubx_files:
+        for path in raw_files:
             with open(path, "rb") as f:
                 shutil.copyfileobj(f, out)
+    for paths in by_ext.values():
+        for path in paths:
             os.remove(path)
-    return merged_path
+    return {"path": merged_path, "format": _RAW_FORMATS[ext], "start": start}
+
+
+def _convbin_input_args(raw, receiver):
+    """convbin's input format and receiver header options for one merged
+    raw file. RTCM3 MSM carries only time-of-week, not the GPS week, so
+    convbin needs -tr (an approximate start time) to place it in the
+    right week - the first file's window-start time from its own filename
+    is close enough, and RTKLIB keeps following the stream's own time
+    from there on, so one -tr covers a whole day."""
+    args = ["-r", raw["format"]]
+    if raw["format"] == "rtcm3":
+        args += ["-tr", raw["start"].strftime("%Y/%m/%d"), raw["start"].strftime("%H:%M:%S")]
+    return args + ["-hr", f"1/{receiver}"]
 
 
 # RINEX 3.04 IGS long-filename convention rinex2snr.py's nolook mode
@@ -279,18 +322,22 @@ def _rinex3_obs_filename(station9, year, doy):
     return f"{station9.upper()}_{_RINEX3_STREAM}_{year}{doy:03d}0000_01D_{_RINEX3_SAMPLERATE:02d}S_MO.rnx"
 
 
-def _convert_to_rinex_v2(merged_ubx, station, year, doy, work_dir):
+def _rinex3_nav_filename(station9, year, doy):
+    return f"{station9.upper()}_{_RINEX3_STREAM}_{year}{doy:03d}0000_01D_MN.rnx"
+
+
+def _convert_to_rinex_v2(raw, receiver, station, year, doy, work_dir):
     """RINEX 2.11 conversion: GPS/GLONASS/Galileo only, since RINEX 2.11
     has no navigation-message slot for BeiDou at all (it predates BeiDou's
     maturity) - no amount of receiver support or orbit availability can
     get around that at this format layer. Simpler station naming (plain
     4-char) than v3.04 though, so kept working as an option (see
     stations.py's "rinex_version") rather than replaced outright."""
-    obs_path, nav_path = _extract_v2_obs_and_nav(merged_ubx, station, year, doy, work_dir)
+    obs_path, nav_path = _extract_v2_obs_and_nav(raw, receiver, station, year, doy, work_dir)
     return {"rinex_version": "2.11", "obs_path": obs_path, "nav_path": nav_path, "rinex2snr_station": station}
 
 
-def _convert_to_rinex_v3(merged_ubx, station, station9, year, doy, work_dir):
+def _convert_to_rinex_v3(raw, receiver, station, station9, year, doy, work_dir):
     """RINEX 3.04 conversion: adds BeiDou (a single mixed-system obs file
     covers GPS/GLONASS/Galileo/BeiDou together in this version) at the
     cost of needing gnssrefl's 9-character IGS-style station naming
@@ -305,40 +352,47 @@ def _convert_to_rinex_v3(merged_ubx, station, station9, year, doy, work_dir):
     to understand a RINEX 3 mixed nav file - is the "don't rebuild what
     already works" option.
     """
-    _, nav_path = _extract_v2_obs_and_nav(merged_ubx, station, year, doy, work_dir)
+    _, nav_path = _extract_v2_obs_and_nav(raw, receiver, station, year, doy, work_dir)
 
     tmp_obs, tmp_nav = "tmp3.rnx", "tmp3.nav"
     _run([
-        "convbin.exe", "-r", "ubx", "-v", "3.04", "-os", "-od", "-oi", "-ot", "-ol",
-        "-hm", station.upper(), "-ha", "0/GNSS", "-hr", "1/u-blox/F9P",
-        "-o", tmp_obs, "-n", tmp_nav, merged_ubx,
+        "convbin.exe", *_convbin_input_args(raw, receiver), "-v", "3.04", "-os", "-od", "-oi", "-ot", "-ol",
+        "-hm", station.upper(), "-ha", "0/GNSS",
+        "-o", tmp_obs, "-n", tmp_nav, raw["path"],
     ], cwd=work_dir, env=os.environ, timeout=300)
     tmp_obs_path = os.path.join(work_dir, tmp_obs)
     if not os.path.exists(tmp_obs_path):
         raise RuntimeError(f"convbin did not produce {tmp_obs}")
+    # The mixed (all-constellation) nav file isn't used by gnssrefl -
+    # nav_path (GPS-only, from the v2.11 pass above) is what -orb nav
+    # seeds - but it's the one worth keeping alongside the obs file when
+    # config.GNSSREFL_KEEP_RINEX is on (see _keep_rinex).
     tmp_nav_path = os.path.join(work_dir, tmp_nav)
+    mixed_nav_path = None
     if os.path.exists(tmp_nav_path):
-        os.remove(tmp_nav_path)  # unused - nav_path (GPS-only, from the v2.11 pass above) is what -orb nav seeds
+        mixed_nav_path = os.path.join(work_dir, _rinex3_nav_filename(station9, year, doy))
+        shutil.move(tmp_nav_path, mixed_nav_path)
 
     obs_path = os.path.join(work_dir, _rinex3_obs_filename(station9, year, doy))
     shutil.move(tmp_obs_path, obs_path)
-    return {"rinex_version": "3.04", "obs_path": obs_path, "nav_path": nav_path, "rinex2snr_station": station9}
+    return {"rinex_version": "3.04", "obs_path": obs_path, "nav_path": nav_path,
+            "mixed_nav_path": mixed_nav_path, "rinex2snr_station": station9}
 
 
-def _convert_to_rinex(merged_ubx, station, station9, rinex_version, year, doy, work_dir):
+def _convert_to_rinex(raw, receiver, station, station9, rinex_version, year, doy, work_dir):
     if rinex_version == "3.04":
-        return _convert_to_rinex_v3(merged_ubx, station, station9, year, doy, work_dir)
-    return _convert_to_rinex_v2(merged_ubx, station, year, doy, work_dir)
+        return _convert_to_rinex_v3(raw, receiver, station, station9, year, doy, work_dir)
+    return _convert_to_rinex_v2(raw, receiver, station, year, doy, work_dir)
 
 
-def _extract_v2_obs_and_nav(merged_ubx, station, year, doy, work_dir):
+def _extract_v2_obs_and_nav(raw, receiver, station, year, doy, work_dir):
     yy = f"{year % 100:02d}"
     obs_name = f"{station}{doy:03d}0.{yy}o"
     nav_name = f"{station}{doy:03d}0.{yy}n"
     _run([
-        "convbin.exe", "-r", "ubx", "-v", "2.11", "-os", "-od", "-oi", "-ot", "-ol",
-        "-hm", station.upper(), "-ha", "0/GNSS", "-hr", "1/u-blox/F9P",
-        "-o", obs_name, "-n", nav_name, merged_ubx,
+        "convbin.exe", *_convbin_input_args(raw, receiver), "-v", "2.11", "-os", "-od", "-oi", "-ot", "-ol",
+        "-hm", station.upper(), "-ha", "0/GNSS",
+        "-o", obs_name, "-n", nav_name, raw["path"],
     ], cwd=work_dir, env=os.environ, timeout=300)
     obs_path = os.path.join(work_dir, obs_name)
     nav_path = os.path.join(work_dir, nav_name)
@@ -347,11 +401,47 @@ def _extract_v2_obs_and_nav(merged_ubx, station, year, doy, work_dir):
     return obs_path, nav_path
 
 
+def _keep_rinex(hostname, conv):
+    """Moves a day's RINEX obs file and its nav file (the mixed one in
+    3.04 mode, else the GPS-only 2.11 one) into config.RINEX_DIR/<hostname>/,
+    replacing any copy from an earlier pass over the same day. Called only
+    after rinex2snr has finished with them (see _process_day)."""
+    dest_dir = os.path.join(config.RINEX_DIR, hostname)
+    os.makedirs(dest_dir, exist_ok=True)
+    for path in (conv["obs_path"], conv.get("mixed_nav_path") or conv["nav_path"]):
+        if not path or not os.path.exists(path):
+            continue
+        target = os.path.join(dest_dir, os.path.basename(path))
+        if os.path.exists(target):
+            os.remove(target)
+        shutil.move(path, target)
+
+
+def rinex_storage_warning():
+    """A warning for the dashboard once config.RINEX_DIR (every station's
+    kept RINEX together) has grown past config.RINEX_WARN_GB, else None.
+    Nothing is pruned automatically - which days to delete is the user's
+    call. Checked whether or not GNSSREFL_KEEP_RINEX is currently on, so
+    switching it off doesn't hide a folder that's already full."""
+    total = 0
+    for root, _, files in os.walk(config.RINEX_DIR):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                continue
+    gb = total / 1024 ** 3
+    if gb <= config.RINEX_WARN_GB:
+        return None
+    return (f"Kept RINEX in {config.RINEX_DIR} is {gb:.1f} GB, over the {config.RINEX_WARN_GB:g} GB "
+            f"warning threshold - delete days you no longer need, or turn off RTKDASH_GNSSREFL_KEEP_RINEX.")
+
+
 def _seed_local_nav(nav_path, year, doy, work_dir):
     """gnssrefl's -orb nav looks for a file named auto<doy>0.<yy>n in the
     current directory (or its own ORBITS store) before trying to download
     one from SOPAC/CDDIS (see gps.nav_name/navfile_retrieve). Pre-seeding
-    it with the nav message extracted from the station's own .ubx file
+    it with the nav message extracted from the station's own raw file
     means it's always "found" locally and gnssrefl never needs to reach an
     external orbit archive at all."""
     yy = f"{year % 100:02d}"
@@ -405,6 +495,7 @@ def _process_results_file(results_path, date_str):
                 emin = float(parts[_RES_EMIN_COL])
                 emax = float(parts[_RES_EMAX_COL])
                 freq = int(float(parts[_RES_FREQ_COL]))
+                rise_set = int(float(parts[_RES_RISE_COL]))
                 pk2noise = float(parts[_RES_PK2NOISE_COL])
             except ValueError:
                 continue
@@ -427,18 +518,35 @@ def _process_results_file(results_path, date_str):
                 # already can by azimuth.
                 "elevation_min_deg": round(emin, 1),
                 "elevation_max_deg": round(emax, 1),
+                # -1 (set) / 1 (rise) - a satellite's rising and setting
+                # passes normally sweep very different azimuths, but not
+                # always, so this rides along specifically so
+                # parsers.get_gnss_track_candidates can tell them apart
+                # rather than relying on azimuth alone to disambiguate
+                # "same track" across days.
+                "rise_set": rise_set,
             })
     return arcs
 
 
-def _count_rejected_arcs(failqc_path):
+def _process_failqc_file(failqc_path):
     """gnssir always writes results/<station>/failQC/<doy>.txt alongside
-    the main results file - same column layout, but RH/amplitude are NaN
-    since a rejected arc never got a trustworthy periodogram peak. Only
-    the count matters here (see the RH chart's background arc-count bars
-    in dashboard.html: how much of a day's raw candidate arcs survived QC
-    at all), not per-arc detail, so this just tallies by constellation."""
-    total = 0
+    the main results file - same column layout, but RH/amplitude/peak2noise
+    are NaN for every row: these arcs never got a trustworthy periodogram
+    peak at all, not "computed but below threshold". Investigating a run of
+    real failQC data (2026-07-28 through 2026-08-23, both stations) found
+    the dominant cause is directional: arcs that never swept down near the
+    station's own elevation mask (see stations.py's "-e1 5") before the
+    satellite set again read as a short, incomplete SNR oscillation gnssir
+    can't extract a peak from - and which azimuths that happens at is
+    static per site (whatever blocks the antenna's low-elevation view in
+    that direction - terrain, a building, a mast). Azimuth/elevation are
+    kept per rejected arc (not just a count) specifically so
+    parsers.get_gnss_rejected_arcs can surface that pattern back to
+    the dashboard, rather than a single opaque "how many rejected" number
+    that can't distinguish a site-wide QC threshold issue from a
+    site-specific obstructed direction."""
+    arcs = []
     with open(failqc_path, encoding="utf-8") as f:
         for line in f:
             if line.startswith("%") or not line.strip():
@@ -447,12 +555,24 @@ def _count_rejected_arcs(failqc_path):
             if len(parts) <= _RES_FREQ_COL:
                 continue
             try:
+                sat = int(float(parts[_RES_SAT_COL]))
+                azim = float(parts[_RES_AZIM_COL])
+                emin = float(parts[_RES_EMIN_COL])
+                emax = float(parts[_RES_EMAX_COL])
                 freq = int(float(parts[_RES_FREQ_COL]))
             except ValueError:
                 continue
-            if _FREQ_SYSTEM.get(freq) is not None:
-                total += 1
-    return total
+            system = _FREQ_SYSTEM.get(freq)
+            if system is None:
+                continue
+            arcs.append({
+                "sat": sat,
+                "system": system,
+                "azimuth_deg": round(azim, 1),
+                "elevation_min_deg": round(emin, 1),
+                "elevation_max_deg": round(emax, 1),
+            })
+    return arcs
 
 
 def yy_of(year):
@@ -526,19 +646,19 @@ def _run_rinex2snr_with_fallback(rinex2snr_station, station, year, doy, day_work
     raise RuntimeError(f"rinex2snr produced no SNR file for doy {doy} with any orbit source")
 
 
-def _process_day(hostname, date_str, station, station9, rinex_version, work_dir):
+def _process_day(hostname, date_str, station, station9, rinex_version, receiver, work_dir):
     year = int(date_str[0:4])
     doy = datetime.strptime(date_str, "%Y-%m-%d").timetuple().tm_yday
 
     day_work = os.path.join(work_dir, date_str)
     os.makedirs(day_work, exist_ok=True)
     try:
-        merged = _extract_day_ubx(hostname, date_str, day_work)
-        if merged is None:
+        raw = _extract_day_raw(hostname, date_str, day_work)
+        if raw is None:
             return
 
-        conv = _convert_to_rinex(merged, station, station9, rinex_version, year, doy, day_work)
-        os.remove(merged)
+        conv = _convert_to_rinex(raw, receiver, station, station9, rinex_version, year, doy, day_work)
+        os.remove(raw["path"])
         _seed_local_nav(conv["nav_path"], year, doy, day_work)
 
         env = _gnssrefl_env()
@@ -548,8 +668,11 @@ def _process_day(hostname, date_str, station, station9, rinex_version, work_dir)
             conv["rinex2snr_station"], station, year, doy, day_work, env, extra_args)
         # The multi-GB RINEX obs file has done its job feeding rinex2snr;
         # nothing downstream needs it and it's cheap to regenerate from the
-        # (still-cached) source .7z archives if it's ever needed again.
-        if os.path.exists(conv["obs_path"]):
+        # (still-cached) source .7z archives if it's ever needed again -
+        # unless it's been asked to be kept for use outside this dashboard.
+        if config.GNSSREFL_KEEP_RINEX:
+            _keep_rinex(hostname, conv)
+        elif os.path.exists(conv["obs_path"]):
             os.remove(conv["obs_path"])
 
         _run(["gnssir.exe", station, str(year), str(doy),
@@ -579,7 +702,7 @@ def _process_day(hostname, date_str, station, station9, rinex_version, work_dir)
             arc_counts[arc["system"]] = arc_counts.get(arc["system"], 0) + 1
 
         failqc_path = os.path.join(config.REFL_CODE, str(year), "results", station, "failQC", f"{doy:03d}.txt")
-        rejected_total = _count_rejected_arcs(failqc_path) if os.path.exists(failqc_path) else 0
+        rejected_arcs = _process_failqc_file(failqc_path) if os.path.exists(failqc_path) else []
 
         record = {
             "date": date_str,
@@ -594,8 +717,9 @@ def _process_day(hostname, date_str, station, station9, rinex_version, work_dir)
             "mean_snr_dbhz": mean_snr,
             "snr_sample_count": snr_count,
             "arc_counts": arc_counts,
-            "rejected_total": rejected_total,
+            "rejected_total": len(rejected_arcs),
             "arcs": arcs,
+            "rejected_arcs": rejected_arcs,
         }
         with open(_quality_json_path(hostname, date_str), "w", encoding="utf-8") as f:
             json.dump(record, f, indent=2)
@@ -606,16 +730,31 @@ def _process_day(hostname, date_str, station, station9, rinex_version, work_dir)
         shutil.rmtree(day_work, ignore_errors=True)
 
 
-def _ensure_station_registered(hostname, station, lat, lon, height_m):
+def _ensure_station_registered(hostname, station, lat, lon, height_m, e1_deg, e2_deg):
     json_path = os.path.join(config.REFL_CODE, "input", station, f"{station}.json")
     if os.path.exists(json_path):
-        return
+        # Re-register if the configured elevation mask or position has
+        # drifted from what's actually on disk (e.g. stations.py's
+        # "e1_deg"/"e2_deg" was widened for a horizontal-antenna station
+        # after its first run, or a provisional lat/lon was surveyed) -
+        # gnssir_input.exe only writes these into this json once, so
+        # without this check a changed config would silently keep using
+        # whatever was registered the very first time.
+        with open(json_path, encoding="utf-8") as f:
+            existing = json.load(f)
+        registered = (existing.get("e1"), existing.get("e2"), existing.get("lat"), existing.get("lon"), existing.get("ht"))
+        configured = (e1_deg, e2_deg, lat, lon, height_m)
+        if registered == configured:
+            return
+        logger.info(
+            "gnssrefl pipeline: %s e1/e2/lat/lon/height changed (%s -> %s), re-registering",
+            station, registered, configured)
     env = _gnssrefl_env()
     _run([
         "gnssir_input.exe", station,
         "-lat", str(lat), "-lon", str(lon),
         "-height", str(height_m), "-allfreq", "T",
-        "-e1", "5", "-e2", "25",
+        "-e1", str(e1_deg), "-e2", str(e2_deg),
     ], cwd=_work_dir(hostname), env=env, timeout=120)
 
 
@@ -701,11 +840,13 @@ def run_pipeline(hostname, force=False):
         station = station_record["gnssrefl_station"]
         station9 = stations.station9(station_record)
         rinex_version = station_record.get("rinex_version", "3.04")
+        receiver = station_record.get("receiver", "u-blox/F9P")
         work_dir = _work_dir(hostname)
         os.makedirs(work_dir, exist_ok=True)
 
         _ensure_station_registered(
-            hostname, station, station_record["lat"], station_record["lon"], station_record["height_m"])
+            hostname, station, station_record["lat"], station_record["lon"], station_record["height_m"],
+            station_record.get("e1_deg", 5), station_record.get("e2_deg", 25))
 
         env = _gnssrefl_env()
         dates = _select_dates_to_process(hostname, _available_dates(hostname), force, env)
@@ -713,7 +854,7 @@ def run_pipeline(hostname, force=False):
         for date_str in dates:
             _set_status(hostname, True, f"processing {date_str}")
             try:
-                _process_day(hostname, date_str, station, station9, rinex_version, work_dir)
+                _process_day(hostname, date_str, station, station9, rinex_version, receiver, work_dir)
                 processed.append(date_str)
             except Exception as exc:
                 logger.warning("gnssrefl pipeline: %s/%s failed: %s", hostname, date_str, exc)
@@ -724,6 +865,10 @@ def run_pipeline(hostname, force=False):
             _update_soil_moisture(hostname, station)
         except Exception as exc:
             logger.warning("gnssrefl pipeline: soil moisture update failed for %s: %s", hostname, exc)
+
+        rinex_warning = rinex_storage_warning()
+        if rinex_warning:
+            logger.warning("gnssrefl pipeline: %s", rinex_warning)
 
         return {"started": True, "processed": processed, "failed": failed}
     finally:

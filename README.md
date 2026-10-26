@@ -8,7 +8,7 @@ moisture) computed from the same raw observation files via
 [gnssrefl](https://github.com/kristinemlarson/gnssrefl).
 
 Nothing here talks to a station directly. `rtkbase`'s own
-`archive_and_clean.sh` uploads each station's raw `.ubx` files and small
+`archive_and_clean.sh` uploads each station's raw GNSS files (`.ubx` from a u-blox F9P, `.rtcm3` from a Unicore UM980) and small
 JSON/log snapshots to Google Drive; this dashboard pulls them down with
 `rclone` into a local cache and reads exclusively from that cache - so it
 can run anywhere with network access to Drive, independent of the
@@ -56,7 +56,7 @@ normal-looking local conditions.
 The GNSS-IR pipeline also needs, all invoked by bare filename so they
 must be on `PATH`:
 
-- [RTKLIB](https://rtklib.com/)'s `convbin` - UBX -> RINEX conversion
+- [RTKLIB](https://rtklib.com/)'s `convbin` - UBX / RTCM3 -> RINEX conversion
 - `7z` (7-Zip) - extracting the `.7z` archives rclone syncs
 - `gzip` / `gunzip` - gnssrefl compresses/decompresses its own SNR and
   orbit files with these. **Windows gotcha**: Git for Windows' `gzip.exe`
@@ -92,6 +92,7 @@ you're most likely to need:
 | `RTKDASH_HISTORY_DAYS` | days of history to sync/display by default | `3` |
 | `RTKDASH_DISPLAY_TZ` | IANA zone every chart/timestamp is rendered in | `Pacific/Auckland` |
 | `REFL_CODE`, `ORBITS`, `EXE` | gnssrefl's own working directories | a `refl_data/` sibling next to this repo |
+| `RTKDASH_GNSSREFL_KEEP_RINEX` | keep each processed day's RINEX obs/nav in `RTKDASH_RINEX_DIR/<hostname>/` instead of deleting it; the dashboard warns once that folder passes `RTKDASH_RINEX_WARN_GB` | off (`RINEX_DIR`: `REFL_CODE/rinex`, warning at `20` GB) |
 | `RTKDASH_GNSSREFL_PYTHON` | `python.exe` of the `gnssrefl` conda env | **must be set** - no portable default (see setup above); e.g. `` `conda run -n gnssrefl python -c "import sys; print(sys.executable)"` `` |
 
 ## Adding a station

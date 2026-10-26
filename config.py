@@ -20,6 +20,13 @@ GDRIVE_GNSS_REMOTE = "gdrive:GNSS_IR_Data"
 GDRIVE_JOURNAL_REMOTE = "gdrive:GNSS_IR_JOURNAL"
 GDRIVE_MPPT_REMOTE = "gdrive:GNSS_IR_MPPT"
 GDRIVE_THERMAL_REMOTE = "gdrive:GNSS_IR_THERMAL"
+# Real (not gnssrefl-estimated) soil moisture from a TOMST TMS-4 datalogger
+# physically installed at the site - manually uploaded here, not by any
+# rtkbase station's own archive_and_clean.sh, so it's a site-wide dataset
+# rather than one partitioned per station hostname (see
+# rclone_sync.ground_truth_cache_dir). Used to validate the GNSS-IR
+# reflector-height-derived estimate against ground truth.
+GDRIVE_GT_REMOTE = "gdrive:GNSS_IR_GT"
 
 # Path to the rclone config file holding the "gdrive" remote's credentials.
 # Defaults to rclone's own default location; override if you copied the
@@ -64,10 +71,10 @@ SYNC_FULL_TIMEOUT_SECONDS = int(os.environ.get("RTKDASH_SYNC_FULL_TIMEOUT_SECOND
 DISPLAY_TZ_NAME = os.environ.get("RTKDASH_DISPLAY_TZ", "Pacific/Auckland")
 
 # --- GNSS-IR (gnssrefl) reflectometry pipeline ---------------------------
-# Turns the same raw .ubx files rclone already syncs (see rclone_sync.py's
+# Turns the same raw GNSS files rclone already syncs (see rclone_sync.py's
 # "gnss" remote) into signal-quality and soil-moisture estimates using
 # gnssrefl (https://github.com/kristinemlarson/gnssrefl). See
-# gnssrefl_pipeline.py for the actual UBX -> RINEX -> SNR -> gnssir/vwc work.
+# gnssrefl_pipeline.py for the actual raw -> RINEX -> SNR -> gnssir/vwc work.
 #
 # Per-station identity (gnssrefl site code, lat/lon/height, RINEX version)
 # lives in stations.py, not here - see its module docstring. Everything
@@ -115,3 +122,17 @@ GNSSREFL_REPROCESS_WINDOW_DAYS = int(os.environ.get("RTKDASH_GNSSREFL_REPROCESS_
 # that's only had a few days of uploads so far; raise back towards the
 # gnssrefl default once enough history has accumulated for it to matter.
 GNSSREFL_VWC_MIN_TRACK_PTS = int(os.environ.get("RTKDASH_GNSSREFL_VWC_MIN_TRACK_PTS", "5"))
+
+# Keep each processed day's RINEX instead of deleting it once rinex2snr has
+# read it - off by default, since nothing in this dashboard needs it again
+# (it's regenerable from the cached .7z archives) and a 1 Hz multi-GNSS day
+# runs to several hundred MB. Turn on to inspect the RINEX with other
+# software: the obs file plus a nav file (RINEX 3 mixed nav in 3.04 mode,
+# GPS-only 2.11 nav otherwise) land in RINEX_DIR/<hostname>/, overwritten
+# whenever that day is reprocessed. Nothing is ever pruned automatically -
+# the dashboard instead shows a warning once the folder (all stations
+# together) exceeds RINEX_WARN_GB, checked even with the switch off so
+# turning it off doesn't hide an already-full folder.
+GNSSREFL_KEEP_RINEX = os.environ.get("RTKDASH_GNSSREFL_KEEP_RINEX", "").strip().lower() in ("1", "true", "yes", "on")
+RINEX_DIR = os.environ.get("RTKDASH_RINEX_DIR", os.path.join(REFL_CODE, "rinex"))
+RINEX_WARN_GB = float(os.environ.get("RTKDASH_RINEX_WARN_GB", "20"))

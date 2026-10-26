@@ -19,23 +19,31 @@
   .flash { padding: 8px 12px; border-radius: 6px; margin-bottom: 16px; }
   .flash.success { background: #dcfce7; color: #166534; }
   .flash.error { background: #fee2e2; color: #991b1b; }
+  .flash.warning { background: #fef3c7; color: #92400e; }
   .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin-bottom: 24px; display: flex; flex-direction: column; }
   .card h2 { font-size: 14px; margin: 0 0 12px; color: #374151; }
   .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
   .card-header h2 { margin: 0; }
-  .chart-wrap { position: relative; flex: 1 1 auto; min-height: 0; }
+  /* A fixed height here used to come from viewport percentage (92vh
+     split 44/56 between the two cards below), so the whole page never
+     grew past one screen - clever in theory, but a card's own content
+     (esp. the GNSS card's filter panel, which can wrap to an extra line
+     at narrower widths) routinely needed more room than its percentage
+     share provided, and there's no good way to *cap* a chart's height
+     without either clipping it or opening a scrollbar-within-a-scrollbar
+     that has no business existing on an ordinary page - both worse than
+     just letting each chart have the fixed height it actually needs and
+     letting the page itself scroll like every other page does if that
+     adds up to more than one screen. */
+  .chart-wrap { position: relative; height: 420px; }
   .chart-wrap canvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
-  /* Two full-width halves stacked vertically: overview on top, RH chart
-     below, split by percentage flex-basis - which needs the container to
-     have a *definite* height to resolve against (min-height doesn't count
-     for that, only height does - percentages silently fall back to "auto"
-     otherwise, which is what made this not work at first). The GNSS card
-     gets a bigger share since it carries a filter panel + extra hint line
-     the overview card doesn't, so the two *chart-wrap* areas - not just
-     the two cards - end up close to equal height. */
-  .main-cards { display: flex; flex-direction: column; gap: 24px; height: 92vh; }
-  .main-cards .card { flex: 0 0 44%; min-height: 380px; margin-bottom: 0; }
-  .main-cards .card.gnss-card { flex-basis: 56%; }
+  .main-cards { display: flex; flex-direction: column; gap: 24px; }
+  .main-cards .card { margin-bottom: 0; }
+  /* Taller chart area than the overview card above - it carries a filter
+     panel + extra hint line the overview card doesn't, so without this
+     its actual chart would end up visually smaller despite being the
+     card most people spend time interacting with. */
+  .gnss-card .chart-wrap { height: 480px; }
   .empty-state { color: #9ca3af; font-size: 13px; text-align: center; padding: 32px 0; }
   .alert-scroll { max-height: 360px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 6px; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -49,10 +57,12 @@
   .hint { font-size: 12px; color: #9ca3af; margin-top: 8px; }
   .modal-overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45); display: flex; align-items: center; justify-content: center; z-index: 100; }
   .modal-overlay[hidden] { display: none; }
-  .modal-box { background: #fff; border-radius: 8px; padding: 16px; width: min(720px, 92vw); max-height: 88vh; overflow-y: auto; }
+  .modal-box { background: #fff; border-radius: 8px; padding: 16px; width: min(1180px, 94vw); max-height: 90vh; overflow-y: auto; }
   .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
   .modal-header h3 { margin: 0; font-size: 14px; }
-  .modal-chart-wrap { position: relative; height: 220px; margin-top: 12px; }
+  .modal-chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+  @media (max-width: 800px) { .modal-chart-grid { grid-template-columns: 1fr; } }
+  .modal-chart-wrap { position: relative; height: 320px; }
   .modal-chart-wrap canvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
   .filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 16px; padding: 8px 12px; margin-bottom: 8px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; }
   .filter-group { display: flex; flex-direction: column; gap: 4px; }
@@ -60,6 +70,23 @@
   .filter-group .row { display: flex; align-items: center; gap: 6px; font-size: 13px; }
   .filter-group select[multiple] { min-width: 160px; font-size: 13px; }
   .filter-group input[type=number] { width: 64px; padding: 4px 6px; border-radius: 6px; border: 1px solid #d1d5db; }
+  /* .main-cards itself carries no margin (its own two cards are spaced by
+     its flex "gap" instead - see above), so without an explicit
+     margin-top here this card would sit flush against the GNSS card right
+     above it - 0px gap next to the 24px gap between the other two cards,
+     which is the inconsistent spacing this rule fixes. */
+  .view-title { font-size: 16px; font-weight: 600; color: #374151; margin: 20px 0 6px; padding-top: 14px; border-top: 1px solid #e5e7eb; display: flex; align-items: center; gap: 12px; }
+  .view-title select { padding: 4px 10px; font-size: 14px; }
+  .sky-layout .hint { font-size: 14px; line-height: 1.45; }
+  .view-title button { padding: 3px 10px; font-size: 12px; }
+  .sky-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+  @media (max-width: 900px) { .sky-layout { grid-template-columns: 1fr; } }
+  #sky-canvas, #heatmap-canvas { display: block; }
+  .heatmap-title { font-size: 15px; font-weight: 600; color: #374151; margin-bottom: 8px; }
+  .sky-wrap, .heatmap-wrap { width: 100%; }
+  .sky-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 15px; margin-bottom: 8px; }
+  .sky-legend .dot { display: inline-block; width: 13px; height: 13px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+  .sky-colorbar { height: 12px; width: 260px; border-radius: 3px; }
 </style>
 </head>
 <body>
@@ -72,22 +99,33 @@
         {% endfor %}
       </select>
       <select name="days" onchange="this.form.submit()">
-        <option value="1" {{ "selected" if days == 1 }}>Last 1 day</option>
-        <option value="3" {{ "selected" if days == 3 }}>Last 3 days</option>
-        <option value="7" {{ "selected" if days == 7 }}>Last 7 days</option>
-        <option value="30" {{ "selected" if days == 30 }}>Last 30 days</option>
-        <option value="90" {{ "selected" if days == 90 }}>Last 90 days</option>
+        {% if range_start or range_end %}<option value="" selected disabled>Custom range</option>{% endif %}
+        <option value="1" {{ "selected" if days == 1 and not (range_start or range_end) }}>Last 1 day</option>
+        <option value="3" {{ "selected" if days == 3 and not (range_start or range_end) }}>Last 3 days</option>
+        <option value="7" {{ "selected" if days == 7 and not (range_start or range_end) }}>Last 7 days</option>
+        <option value="30" {{ "selected" if days == 30 and not (range_start or range_end) }}>Last 30 days</option>
+        <option value="90" {{ "selected" if days == 90 and not (range_start or range_end) }}>Last 90 days</option>
       </select>
+    </form>
+    <form class="rangepick" method="get" action="{{ url_for('dashboard') }}" style="margin-left: 8px;">
+      <input type="hidden" name="station" value="{{ hostname }}">
+      From <input type="date" name="start" value="{{ range_start }}" required>
+      to <input type="date" name="end" value="{{ range_end }}">
+      <button type="submit">Apply</button>
     </form>
     <form class="refresh" method="post" action="{{ url_for('refresh') }}" id="sync-form">
       <input type="hidden" name="station" value="{{ hostname }}">
       <input type="hidden" name="days" value="{{ days }}">
+      <input type="hidden" name="start" value="{{ range_start }}">
+      <input type="hidden" name="end" value="{{ range_end }}">
       <input type="hidden" name="force" id="sync-force-input" value="0">
       <button type="submit">Sync from Google Drive</button>
     </form>
     <form class="refresh" method="post" action="{{ url_for('refresh_gnssrefl') }}">
       <input type="hidden" name="station" value="{{ hostname }}">
       <input type="hidden" name="days" value="{{ days }}">
+      <input type="hidden" name="start" value="{{ range_start }}">
+      <input type="hidden" name="end" value="{{ range_end }}">
       <button type="submit" id="gnssrefl-run-btn" {{ "disabled" if gnssrefl_status.running }}>Run GNSS-IR analysis</button>
       <label style="font-size: 12px; color: #6b7280; margin-left: 4px;" title="Reprocesses every available day from scratch, ignoring the incremental &quot;only if new files arrived&quot; check. Also applies to Sync from Google Drive: when checked, syncing pulls every file ever uploaded (instead of just the last few days) and backfills/overwrites the local cache - slower, but needed to backfill a day the dashboard code itself started reading a new field from, or to recover a cache that's missing older history.">
         <input type="checkbox" name="force" id="force-reprocess-checkbox" value="1" style="vertical-align: middle;"> Force full reprocess
@@ -127,6 +165,9 @@
       <div class="flash {{ category }}">{{ message }}</div>
     {% endfor %}
   {% endwith %}
+  {% if rinex_warning %}
+    <div class="flash warning">{{ rinex_warning }}</div>
+  {% endif %}
 
   <div class="main-cards">
     <div class="card">
@@ -198,6 +239,22 @@
             <span>&deg;</span>
           </div>
         </div>
+        <div class="filter-group">
+          <label>&nbsp;</label>
+          <label style="font-weight: normal;">
+            <input type="checkbox" id="filter-hide-arc-points" style="vertical-align: middle;">
+            Hide arc points (keep smoothed line + bars)
+          </label>
+        </div>
+        {% if ground_truth_series %}
+        <div class="filter-group">
+          <label>&nbsp;</label>
+          <label style="font-weight: normal;">
+            <input type="checkbox" id="filter-show-ground-truth" style="vertical-align: middle;">
+            Show real soil moisture (TMS-4 ground truth)
+          </label>
+        </div>
+        {% endif %}
         <button type="button" onclick="clearGnssFilters()">Clear filters</button>
       </div>
       <div class="hint" id="filter-hint">
@@ -205,9 +262,32 @@
         ({% for sys, n in gnss_summary.by_system.items() %}{{ sys }} {{ n }}{{ ", " if not loop.last }}{% endfor %})
       </div>
       <div class="chart-wrap"><canvas id="chart-gnss-quality"></canvas></div>
-      <div class="hint">Each dot = one arc's reflector height; line = smoothed RH (black=multi-GNSS, purple=GPS-only fallback). Pale bars = each day's raw arc count (always unfiltered). Y axis inverted. Drag/wheel to zoom, Shift+drag to pan. Direction/elevation filters need "Run GNSS-IR analysis" rerun on older days to take effect.</div>
+      <div class="hint">Each dot = one arc's reflector height; line = smoothed RH (black=multi-GNSS, purple=GPS-only fallback). Pale bars = each day's raw arc count (always unfiltered). Y axis inverted. Drag/wheel to zoom, Shift+drag to pan. Direction/elevation filters need "Run GNSS-IR analysis" rerun on older days to take effect.{% if ground_truth_series %} Ground-truth soil moisture (dashed orange, right-hand axis) isn't temperature-corrected yet - see its tooltip.{% endif %}</div>
+
+      <div class="view-title">Sky plot - where the filtered good data comes from
+        <select id="sky-color-mode">
+          <option value="system">Color: constellation</option>
+          <option value="amplitude">Color: SNR oscillation amplitude (multipath strength)</option>
+          <option value="peak2noise">Color: peak-to-noise (periodogram quality)</option>
+        </select>
+      </div>
+      <div class="sky-layout">
+        <div>
+          <div id="sky-legend" class="sky-legend"></div>
+          <div class="sky-wrap"><canvas id="sky-canvas"></canvas></div>
+          <div id="sky-hover" class="hint">&nbsp;</div>
+          <div class="hint">Centre = overhead, outer ring = horizon (only the low-elevation band gnssir uses is shown). 0&deg;=North, clockwise. Each bar = one arc, spanning the elevation range it covered at its mean azimuth (long = swept the full mask, short = partly blocked); gray = arcs gnssir rejected. Follows the filters above (band doesn't apply to gray arcs - a rejected arc has no band). Arcs from before rejected-arc tracking need "Run GNSS-IR analysis" rerun to appear in gray.</div>
+        </div>
+        <div>
+          <div class="heatmap-title">Good arcs per day by direction</div>
+          <div class="heatmap-wrap"><canvas id="heatmap-canvas"></canvas></div>
+          <div id="heatmap-hover" class="hint">&nbsp;</div>
+          <div class="hint">Rows = days, columns = 10&deg; of azimuth (0&deg;=North). Satellite orbits repeat almost daily, so stable vertical stripes = the same directions are covered every day. Follows the same filters.</div>
+        </div>
+      </div>
+
       {% else %}
-      <div class="empty-state">No GNSS-IR results yet. Click "Run GNSS-IR analysis" above to process synced .ubx files.</div>
+      <div class="empty-state">No GNSS-IR results yet. Click "Run GNSS-IR analysis" above to process synced raw GNSS files.</div>
       {% endif %}
     </div>
   </div>
@@ -219,13 +299,32 @@
         <button type="button" onclick="closeArcDetail()">Close</button>
       </div>
       <div id="arc-detail-status" class="hint"></div>
-      <div class="modal-chart-wrap"><canvas id="chart-arc-raw"></canvas></div>
-      <div class="modal-chart-wrap"><canvas id="chart-arc-periodogram"></canvas></div>
+      <div class="modal-chart-grid">
+        <div class="modal-chart-wrap"><canvas id="chart-arc-raw"></canvas></div>
+        <div class="modal-chart-wrap"><canvas id="chart-arc-periodogram"></canvas></div>
+        <div class="modal-chart-wrap"><canvas id="chart-arc-multipath"></canvas></div>
+        <div class="modal-chart-wrap"><canvas id="chart-arc-fresnel"></canvas></div>
+      </div>
+
+      <!-- Same-track comparison: overlay another recording of this exact
+           satellite/frequency/rise-or-set direction (azimuth within
+           +/-3deg) - either a different date on this station (rainfall
+           before/after) or the same date on a different station
+           (antenna-vs-antenna). See gnss_track_candidates() in app.py. -->
+      <div class="hint" style="font-weight: 600; margin-top: 14px;">Compare with another recording (same satellite/frequency/direction)</div>
+      <div class="row" style="display: flex; gap: 8px; align-items: center; margin-top: 4px; flex-wrap: wrap;">
+        <select id="arc-compare-station"></select>
+        <select id="arc-compare-date"><option value="">-</option></select>
+        <button type="button" id="arc-compare-btn" disabled>Overlay</button>
+        <button type="button" id="arc-compare-clear-btn" hidden>Clear overlay</button>
+      </div>
+      <div id="arc-compare-status" class="hint"></div>
     </div>
   </div>
 
 <script>
 const hostname = {{ hostname | tojson }};
+const allStations = {{ all_stations | tojson }};
 const temperatureSeries = {{ temperature_series | tojson }};
 const voltageSeries = {{ voltage_series | tojson }};
 const dataSizeSeries = {{ data_size_series | tojson }};
@@ -233,6 +332,10 @@ const powerStats = {{ power_stats | tojson }};
 const alertsData = {{ alerts | tojson }};
 const gnssQualitySeries = {{ gnss_quality_series | tojson }};
 const gnssDailyArcCounts = {{ gnss_daily_arc_counts | tojson }};
+const gnssRejectedArcs = {{ gnss_rejected_arcs | tojson }};
+// Real TMS-4 ground-truth soil moisture (see parsers.get_ground_truth_soil_moisture) -
+// site-wide, not filtered by any of the GNSS quality controls above.
+const groundTruthSeries = {{ ground_truth_series | tojson }};
 let gnssQualityChart; // assigned below, if there's data to chart - referenced by the card's "Reset zoom" button
 
 // Quote every field per RFC 4180 (simplest correct rule: doubling embedded
@@ -274,7 +377,9 @@ function openCompare() {
   const a = document.getElementById("compare-a").value;
   const b = document.getElementById("compare-b").value;
   const days = {{ days }};
-  const url = `{{ url_for('compare') }}?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}&days=${days}`;
+  {% set range_query = (('&start=' ~ range_start) if range_start else '') ~ (('&end=' ~ range_end) if range_end else '') %}
+  const rangeQuery = {{ range_query | tojson }};
+  const url = `{{ url_for('compare') }}?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}&days=${days}${rangeQuery}`;
   window.open(url, "_blank");
 }
 
@@ -692,6 +797,7 @@ function buildGnssQualityChart(filteredSeries) {
   const seenPerSystem = {};
   const SMOOTHED_LABEL = "Smoothed RH";
   const TOTAL_ARCS_LABEL = "Total arcs received";
+  const GROUND_TRUTH_LABEL = "Soil moisture (TMS-4 ground truth)";
 
   // Chart.js's dataset "order" only controls the sort it feeds into its
   // own draw loop, and that still wasn't enough to keep these two lines
@@ -700,7 +806,7 @@ function buildGnssQualityChart(filteredSeries) {
   // dataset, explicitly re-run each of these two controllers' draw() once
   // more, so they're unconditionally the last ink laid down regardless of
   // dataset order.
-  const ON_TOP_LABELS = [SMOOTHED_LABEL, TOTAL_ARCS_LABEL];
+  const ON_TOP_LABELS = [SMOOTHED_LABEL, TOTAL_ARCS_LABEL, GROUND_TRUTH_LABEL];
   const redrawOnTop = {
     id: "redrawOnTop",
     afterDatasetsDraw(chart) {
@@ -764,6 +870,37 @@ function buildGnssQualityChart(filteredSeries) {
     },
   ] : [];
 
+  // Real TMS-4 ground truth (see parsers.get_ground_truth_soil_moisture) -
+  // opt-in via the checkbox, same idea as arcCountDatasets/dayNightShading
+  // being conditionally built rather than always present, so an empty or
+  // deselected series just means "nothing to add", not an empty axis
+  // cluttering the chart. vwc_percent can be missing per-point (no
+  // calibration file synced yet) - null, not undefined, so Chart.js's
+  // spanGaps skips just that point instead of breaking the whole line.
+  const hideArcPoints = !!document.getElementById("filter-hide-arc-points")?.checked;
+  const showGroundTruth = !!document.getElementById("filter-show-ground-truth")?.checked;
+  const groundTruthDatasets = (showGroundTruth && groundTruthSeries.length) ? [{
+    type: "line",
+    label: GROUND_TRUTH_LABEL,
+    data: groundTruthSeries.map(p => ({
+      x: toNaive(p.t_display), y: p.vwc_percent ?? null,
+      moistureRaw: p.moisture_raw, soilTempC: p.soil_temp_c,
+    })),
+    borderColor: "#f97316", backgroundColor: "#f97316",
+    borderWidth: 2.5, pointRadius: 0, tension: 0.1, fill: false,
+    spanGaps: true, yAxisID: "yGroundTruth",
+  }] : [];
+  // A fixed 0-100% axis makes real soil moisture unreadable: this site's
+  // whole record so far only spans about 42-43% (wet NZ winter soil
+  // doesn't swing wildly day to day), which would look like a flat line
+  // pinned near the bottom of a full 0-100 scale. Scale to the actual
+  // data instead, like a real instrument readout would, with a little
+  // padding so the line doesn't hug the plot edges.
+  const groundTruthVwcs = groundTruthSeries.map(p => p.vwc_percent).filter(v => v != null);
+  const gtMin = groundTruthVwcs.length ? Math.min(...groundTruthVwcs) : 0;
+  const gtMax = groundTruthVwcs.length ? Math.max(...groundTruthVwcs) : 100;
+  const gtPad = Math.max((gtMax - gtMin) * 0.15, 0.5);
+
   if (gnssQualityChart) gnssQualityChart.destroy();
   gnssQualityChart = new Chart(document.getElementById("chart-gnss-quality"), {
     type: "scatter",
@@ -775,7 +912,12 @@ function buildGnssQualityChart(filteredSeries) {
         // explicit forced redraw on top - see redrawOnTop - for full
         // certainty there).
         ...arcCountDatasets,
-        ...keys.map(key => {
+        // Opt-in hide (default shown, matching prior behavior) - the
+        // smoothed line and arc-count bars stay regardless, so hiding
+        // the point cloud is purely about decluttering the view to read
+        // an overlay like ground truth more clearly, not about filtering
+        // which arcs count.
+        ...(hideArcPoints ? [] : keys.map(key => {
           const [system, freqLabel] = key.split("|");
           const paletteIdx = (seenPerSystem[system] ??= 0);
           seenPerSystem[system]++;
@@ -787,12 +929,32 @@ function buildGnssQualityChart(filteredSeries) {
               x: toNaive(p.t_display), y: p.rh_m,
               sat: p.sat, amplitude: p.amplitude, peak2noise: p.peak2noise,
               azimuth_deg: p.azimuth_deg,
+              // freq/riseSet identify "the same track" for the arc-detail
+              // modal's comparison panel (see openArcDetail below) -
+              // riseSet is undefined for an arc processed before
+              // gnssrefl_pipeline started capturing it, which the
+              // comparison query treats as "direction unknown, don't
+              // filter on it" rather than excluding everything.
+              freq: p.freq, riseSet: p.rise_set,
               date: p.t.slice(0, 10), arcKey: p.arc_key,
+              // Full local timestamp for the arc-detail modal's title
+              // (see openArcDetail) - date alone doesn't say when, and
+              // the modal already shows one for whatever's picked in the
+              // "compare with..." panel, so the primary point needs one
+              // too rather than being the one thing in the modal with no
+              // time reference at all.
+              tDisplay: p.t_display,
+              // Raw UTC ISO timestamp (as opposed to tDisplay's local
+              // display string) - lets the arc-detail modal's legend
+              // match this point against groundTruthSeries's own "t"
+              // field directly (see nearestGroundTruth) without having
+              // to re-derive UTC from a localized string.
+              t: p.t,
             })),
             backgroundColor: withAlpha(palette[paletteIdx % palette.length], POINT_ALPHA),
             pointRadius: 3, pointHoverRadius: 5,
           };
-        }),
+        })),
         {
           type: "line",
           label: SMOOTHED_LABEL,
@@ -814,6 +976,7 @@ function buildGnssQualityChart(filteredSeries) {
             },
           },
         },
+        ...groundTruthDatasets,
       ],
     },
     options: {
@@ -828,7 +991,7 @@ function buildGnssQualityChart(filteredSeries) {
         if (!elements.length) return;
         const el = elements[0];
         const ds = chart.data.datasets[el.datasetIndex];
-        if (ds.label === SMOOTHED_LABEL || ds.label === TOTAL_ARCS_LABEL || ds.label.startsWith("_ArcCount_")) return;
+        if (ds.label === SMOOTHED_LABEL || ds.label === TOTAL_ARCS_LABEL || ds.label === GROUND_TRUTH_LABEL || ds.label.startsWith("_ArcCount_")) return;
         openArcDetail(ds.data[el.index], ds.label);
       },
       scales: {
@@ -841,6 +1004,16 @@ function buildGnssQualityChart(filteredSeries) {
         // trick the overview chart's own "yAlerts" axis uses to confine
         // its markers to a strip near the bottom.
         yArcCount: { display: false, min: 0, max: maxDailyArcTotal * 5 },
+        // Real (right-hand) axis, unlike yArcCount above - this is an
+        // actual value someone reads off, not a background decoration -
+        // so it stays hidden only when there's nothing plotted on it.
+        yGroundTruth: {
+          display: showGroundTruth && groundTruthSeries.length > 0,
+          position: "right",
+          min: gtMin - gtPad, max: gtMax + gtPad,
+          title: { display: true, text: "Soil moisture (% VWC)" },
+          grid: { drawOnChartArea: false },
+        },
       },
       plugins: {
         // The legend's old job (show/hide a constellation/frequency
@@ -870,6 +1043,11 @@ function buildGnssQualityChart(filteredSeries) {
               if (context.dataset.label === TOTAL_ARCS_LABEL) {
                 return `${TOTAL_ARCS_LABEL}: ${context.parsed.y}`;
               }
+              if (context.dataset.label === GROUND_TRUTH_LABEL) {
+                const p = context.raw;
+                const vwc = context.parsed.y == null ? "n/a (no calibration synced)" : `${context.parsed.y.toFixed(1)}%`;
+                return `Ground truth VWC: ${vwc} (raw ${p.moistureRaw}, soil ${p.soilTempC}°C) - not temperature-corrected`;
+              }
               if (context.dataset.label.startsWith("_ArcCount_")) {
                 const name = context.dataset.label.replace("_ArcCount_", "");
                 return `${ARC_COUNT_NAME[name] || name}: ${context.parsed.y} arcs`;
@@ -897,11 +1075,189 @@ function buildGnssQualityChart(filteredSeries) {
   });
 }
 
+// --- Filter-driven views below the RH chart --------------------------------
+// Sky plot: redrawn from the same filtered arc list the RH chart uses (see
+// rebuildGnssQualityChart), so the card's one set of filters drives it too.
+const SYSTEM_NAME = { gps: "GPS", glonass: "GLONASS", galileo: "Galileo", beidou: "BeiDou" };
+const REJECTED_COLOR = "rgba(107, 114, 128, 0.45)";
+
+// Rejected arcs carry no band, so the band filter is skipped for them.
+function filterRejectedArcs(f) {
+  const fr = { ...f, band: null };
+  return gnssRejectedArcs.filter(p => gnssFilterReject(p, fr) === null);
+}
+
+// Purple -> yellow ramp (dark = low, bright = high), readable on white.
+function rampColor(v, lo, hi, alpha) {
+  const x = hi > lo ? Math.min(Math.max((v - lo) / (hi - lo), 0), 1) : 0.5;
+  const stops = [[68, 1, 84], [49, 104, 142], [33, 145, 140], [94, 201, 98], [253, 231, 37]];
+  const pos = x * (stops.length - 1), i = Math.min(Math.floor(pos), stops.length - 2), k = pos - i;
+  const c = stops[i].map((s, j) => Math.round(s + (stops[i + 1][j] - s) * k));
+  return `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${alpha})`;
+}
+
+function quantile(sortedVals, q) {
+  if (!sortedVals.length) return 0;
+  return sortedVals[Math.min(sortedVals.length - 1, Math.floor(q * sortedVals.length))];
+}
+
+// ---- Sky plot ----
+let lastSkySize = 560;
+let skyDrawn = [];  // segments in canvas px, for hover hit-testing
+
+function drawSkyPlot(good, rejected) {
+  const canvas = document.getElementById("sky-canvas");
+  const dpr = window.devicePixelRatio || 1;
+  const SKY_SIZE = Math.min(canvas.parentElement.clientWidth || 560, 760);
+  canvas.width = SKY_SIZE * dpr; canvas.height = SKY_SIZE * dpr;
+  canvas.style.width = SKY_SIZE + "px"; canvas.style.height = SKY_SIZE + "px";
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, SKY_SIZE, SKY_SIZE);
+
+  const cx = SKY_SIZE / 2, cy = SKY_SIZE / 2, R = SKY_SIZE / 2 - 40;
+  // Outer ring = horizon, centre = the top of the elevation band actually
+  // seen (>=30 deg so the usual 5-25 deg band isn't stretched absurdly).
+  const allEl = [...good, ...rejected].map(p => p.elevation_max_deg).filter(v => v != null);
+  const elTop = Math.max(30, Math.ceil(Math.max(0, ...allEl) / 5) * 5);
+  const rOf = el => R * (1 - el / elTop);
+  const xy = (az, el) => {
+    const a = az * Math.PI / 180, r = rOf(el);
+    return [cx + r * Math.sin(a), cy - r * Math.cos(a)];
+  };
+
+  ctx.strokeStyle = "#e5e7eb"; ctx.fillStyle = "#9ca3af"; ctx.lineWidth = 1; ctx.font = "13px sans-serif";
+  ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+  for (let el = 0; el < elTop; el += 10) {
+    ctx.beginPath(); ctx.arc(cx, cy, rOf(el), 0, 2 * Math.PI); ctx.stroke();
+    if (el > 0) ctx.fillText(el + "°", cx + 3, cy - rOf(el) + 10);
+  }
+  for (let az = 0; az < 360; az += 30) {
+    const [x, y] = xy(az, 0);
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(x, y); ctx.stroke();
+  }
+  ctx.fillStyle = "#374151"; ctx.font = "12px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  for (let az = 0; az < 360; az += 30) {
+    const a = az * Math.PI / 180, label = { 0: "N", 90: "E", 180: "S", 270: "W" }[az] ?? az;
+    ctx.font = typeof label === "string" ? "bold 17px sans-serif" : "14px sans-serif";
+    ctx.fillText(label, cx + (R + 20) * Math.sin(a), cy - (R + 20) * Math.cos(a));
+  }
+
+  const mode = document.getElementById("sky-color-mode").value;
+  let colorOf, legend;
+  if (mode === "system") {
+    colorOf = p => withAlpha((SYSTEM_PALETTE[p.system] || ["#6b7280"])[0], 0.5);
+    const present = SYSTEM_ORDER.filter(s => good.some(p => p.system === s));
+    legend = present.map(s => `<span><span class="dot" style="background:${SYSTEM_PALETTE[s][0]}"></span>${SYSTEM_NAME[s]} ${good.filter(p => p.system === s).length}</span>`).join("");
+  } else {
+    const vals = good.map(p => p[mode]).filter(v => v != null).sort((a, b) => a - b);
+    const lo = quantile(vals, 0.05), hi = quantile(vals, 0.95);
+    colorOf = p => p[mode] == null ? REJECTED_COLOR : rampColor(p[mode], lo, hi, 0.75);
+    const grad = [0, 0.25, 0.5, 0.75, 1].map(x => rampColor(lo + (hi - lo) * x, lo, hi, 1)).join(", ");
+    legend = `<span>${mode === "amplitude" ? "Amplitude" : "Peak/noise"}: ${lo.toFixed(1)}</span>`
+      + `<span class="sky-colorbar" style="background: linear-gradient(90deg, ${grad})"></span><span>${hi.toFixed(1)}+</span>`;
+  }
+  legend += `<span><span class="dot" style="background:${REJECTED_COLOR}"></span>Rejected ${rejected.length}</span>`;
+  document.getElementById("sky-legend").innerHTML = legend;
+
+  lastSkySize = SKY_SIZE;
+  skyDrawn = [];
+  ctx.lineCap = "round";
+  const drawArc = (p, color, width) => {
+    const lo = p.elevation_min_deg ?? 5, hi = p.elevation_max_deg ?? 25;
+    const [x1, y1] = xy(p.azimuth_deg, lo), [x2, y2] = xy(p.azimuth_deg, hi);
+    ctx.strokeStyle = color; ctx.lineWidth = width;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    skyDrawn.push({ p, x1, y1, x2, y2 });
+  };
+  for (const p of rejected) drawArc(p, REJECTED_COLOR, 2);
+  for (const p of good) drawArc(p, colorOf(p), 3);
+}
+
+function skyHoverText(evt) {
+  const box = document.getElementById("sky-canvas").getBoundingClientRect();
+  const mx = evt.clientX - box.left, my = evt.clientY - box.top;
+  let best = null, bestD = 6;
+  for (const s of skyDrawn) {
+    const dx = s.x2 - s.x1, dy = s.y2 - s.y1, len2 = dx * dx + dy * dy;
+    const t = len2 ? Math.min(Math.max(((mx - s.x1) * dx + (my - s.y1) * dy) / len2, 0), 1) : 0;
+    const d = Math.hypot(mx - (s.x1 + t * dx), my - (s.y1 + t * dy));
+    if (d <= bestD) { bestD = d; best = s.p; }
+  }
+  if (!best) return " ";
+  const name = SYSTEM_NAME[best.system] || best.system;
+  const el = `${best.elevation_min_deg ?? "?"}-${best.elevation_max_deg ?? "?"}°`;
+  return best.rh_m !== undefined
+    ? `${best.freq_label} sat ${best.sat}: az ${best.azimuth_deg}°, el ${el}, Amp ${best.amplitude}, Pk/Noise ${best.peak2noise}, RH ${best.rh_m} m`
+    : `${name} sat ${best.sat} (rejected): az ${best.azimuth_deg}°, el ${el}`;
+}
+
+const AZ_BIN_DEG = 10;
+const AZ_BINS = 360 / AZ_BIN_DEG;
+// ---- Day x azimuth heatmap ----
+let heatmapCells = null;
+function drawHeatmap(good) {
+  const dates = [...new Set(gnssQualitySeries.map(p => p.t.slice(0, 10)))].sort();
+  const counts = new Map(dates.map(d => [d, new Array(AZ_BINS).fill(0)]));
+  for (const p of good) {
+    const row = counts.get(p.t.slice(0, 10));
+    if (row) row[Math.floor((((p.azimuth_deg % 360) + 360) % 360) / AZ_BIN_DEG)]++;
+  }
+  const canvas = document.getElementById("heatmap-canvas");
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.parentElement.clientWidth || 500;
+  const left = 100, top = 8, bottom = 34, cellH = Math.min(44, Math.max(18, (lastSkySize - top - bottom) / dates.length));
+  const H = top + bottom + cellH * dates.length;
+  canvas.width = W * dpr; canvas.height = H * dpr; canvas.style.height = H + "px";
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const cellW = (W - left - 4) / AZ_BINS;
+  const max = Math.max(1, ...[...counts.values()].flat());
+  ctx.font = "14px sans-serif"; ctx.textBaseline = "middle";
+  heatmapCells = { left, top, cellW, cellH, dates, counts };
+  dates.forEach((d, r) => {
+    ctx.fillStyle = "#6b7280"; ctx.textAlign = "right";
+    if (cellH >= 18 && (dates.length <= 24 || r % Math.ceil(dates.length / 24) === 0)) ctx.fillText(d.slice(5), left - 6, top + r * cellH + cellH / 2);
+    counts.get(d).forEach((n, c) => {
+      ctx.fillStyle = n ? rampColor(n, 0, max, 1) : "#f3f4f6";
+      ctx.fillRect(left + c * cellW, top + r * cellH, cellW - 1, cellH - 1);
+    });
+  });
+  ctx.fillStyle = "#6b7280"; ctx.textAlign = "center";
+  for (let az = 0; az < 360; az += 30) ctx.fillText(az + "°", left + (az / AZ_BIN_DEG) * cellW, H - bottom / 2 + 4);
+}
+
+function heatmapHoverText(evt) {
+  if (!heatmapCells) return " ";
+  const box = document.getElementById("heatmap-canvas").getBoundingClientRect();
+  const { left, top, cellW, cellH, dates, counts } = heatmapCells;
+  const c = Math.floor((evt.clientX - box.left - left) / cellW), r = Math.floor((evt.clientY - box.top - top) / cellH);
+  if (c < 0 || c >= AZ_BINS || r < 0 || r >= dates.length) return " ";
+  return `${dates[r]}, ${c * AZ_BIN_DEG}°-${(c + 1) * AZ_BIN_DEG}°: ${counts.get(dates[r])[c]} good arcs`;
+}
+
+let gnssViewsWired = false;
+let lastGnssViewArgs = null;
+function rebuildGnssViews(good, filters) {
+  drawSkyPlot(good, filterRejectedArcs(filters));
+  drawHeatmap(good);
+  lastGnssViewArgs = [good, filters];
+  if (!gnssViewsWired) {
+    gnssViewsWired = true;
+    document.getElementById("heatmap-canvas").addEventListener("mousemove", e => { document.getElementById("heatmap-hover").textContent = heatmapHoverText(e); });
+    window.addEventListener("resize", () => { if (lastGnssViewArgs) rebuildGnssViews(...lastGnssViewArgs); });
+    document.getElementById("sky-canvas").addEventListener("mousemove", e => { document.getElementById("sky-hover").textContent = skyHoverText(e); });
+    document.getElementById("sky-color-mode").addEventListener("change", () => rebuildGnssQualityChart());
+  }
+}
+
 if (gnssQualitySeries.length) {
   populateConstellationFilter();
   populateSatFilter(null);
   populateBandFilter(null);
   buildGnssQualityChart(gnssQualitySeries);
+  rebuildGnssViews(gnssQualitySeries, currentGnssFilters());
 
   function rebuildGnssQualityChart() {
     const filters = currentGnssFilters();
@@ -913,6 +1269,7 @@ if (gnssQualitySeries.length) {
       else if (reason === "no-elevation-data") hiddenNoElevation++;
     }
     buildGnssQualityChart(kept);
+    rebuildGnssViews(kept, filters);
 
     const summary = { total_arcs: kept.length, by_system: {} };
     const satellites = new Set();
@@ -939,6 +1296,11 @@ if (gnssQualitySeries.length) {
   document.getElementById("filter-az-width").addEventListener("input", rebuildGnssQualityChart);
   document.getElementById("filter-el-min").addEventListener("input", rebuildGnssQualityChart);
   document.getElementById("filter-el-max").addEventListener("input", rebuildGnssQualityChart);
+  document.getElementById("filter-hide-arc-points").addEventListener("change", rebuildGnssQualityChart);
+  // Only present when ground_truth_series is non-empty (see the
+  // conditional around its checkbox above) - absent entirely for a
+  // deployment with no TMS data uploaded yet.
+  document.getElementById("filter-show-ground-truth")?.addEventListener("change", rebuildGnssQualityChart);
 
   window.clearGnssFilters = function () {
     document.getElementById("filter-constellation").value = "";
@@ -952,27 +1314,90 @@ if (gnssQualitySeries.length) {
   };
 }
 
-// Two mini-charts inside the modal, matching gnssrefl's own -plt
+// Four mini-charts inside the modal. The first two match gnssrefl's own -plt
 // diagnostic layout for a single arc: detrended SNR vs elevation angle on
 // top, the Lomb-Scargle periodogram (candidate reflector heights vs
 // spectral amplitude) below, whose peak is the RH value already shown on
 // the main scatter point. Both curves come from /gnss_arc_detail/<date>/
 // <key> (see app.py), precomputed by gnssrefl_arc_detail.py using
-// gnssrefl's own gps.strip_compute() - not reimplemented here.
-let arcRawChart, arcPeriodogramChart;
+// gnssrefl's own gps.strip_compute() - not reimplemented here. The other two
+// (multipath fit, Fresnel-zone plan view) are derived from that same result -
+// see the "Model charts" section below.
+let arcRawChart, arcPeriodogramChart, arcMultipathChart, arcFresnelChart;
+
+// Same 8-point compass, same boundaries (0/45/90/135/180/225/270/315), as
+// the "Direction signal arrived from" filter dropdown above - one
+// vocabulary for azimuth across the page rather than a second one just
+// for the modal title.
+const COMPASS_LABELS = ["North", "NE", "East", "SE", "South", "SW", "West", "NW"];
+function compassDirection(azimuthDeg) {
+  const idx = Math.round((((azimuthDeg % 360) + 360) % 360) / 45) % 8;
+  return COMPASS_LABELS[idx];
+}
+
+// Real (TOMST TMS-4) ground-truth soil moisture nearest a given moment -
+// groundTruthSeries is site-wide (not per-station, see
+// parsers.get_ground_truth_soil_moisture), so the same series backs this
+// regardless of which station's arc is open. Beyond GROUND_TRUTH_MAX_GAP_MS
+// the nearest reading is considered too stale to be meaningfully "now" and
+// is left out rather than silently shown as if it were current.
+const GROUND_TRUTH_MAX_GAP_MS = 6 * 60 * 60 * 1000;
+function nearestGroundTruth(isoT) {
+  if (!isoT || !groundTruthSeries.length) return null;
+  const target = Date.parse(isoT);
+  let best = null, bestDiff = Infinity;
+  for (const g of groundTruthSeries) {
+    if (g.vwc_percent == null) continue;
+    const diff = Math.abs(Date.parse(g.t) - target);
+    if (diff < bestDiff) { bestDiff = diff; best = g; }
+  }
+  return (best && bestDiff <= GROUND_TRUTH_MAX_GAP_MS) ? best.vwc_percent : null;
+}
+
+// Appends the nearest ground-truth reading to a legend label (see
+// primaryLabel/compareLabel in openArcDetail/applyCompareOverlay) -
+// omitted entirely rather than as "GT n/a" when there's nothing close
+// enough in time, so a station/period with no TMS-4 data doesn't clutter
+// every legend entry with a useless placeholder.
+function withGroundTruth(label, isoT) {
+  const gt = nearestGroundTruth(isoT);
+  return gt != null ? `${label} · GT ${gt.toFixed(1)}%` : label;
+}
+
+// Tracks what's currently open in the modal so the "compare with..."
+// panel (see below) has something to match a same-track query against -
+// both reset on every openArcDetail call. currentArcHostname is always
+// this page's own `hostname`: the modal only ever opens from points in
+// gnssQualitySeries, which is scoped to this one station.
+let currentArcPoint = null;
+let currentArcHostname = null;
 
 async function openArcDetail(point, freqLabel) {
   const modal = document.getElementById("arc-detail-modal");
   const title = document.getElementById("arc-detail-title");
   const status = document.getElementById("arc-detail-status");
-  title.textContent = `${freqLabel} sat ${point.sat} - RH ${point.y.toFixed(2)} m`;
+  // Constellation/band (freqLabel already combines both, e.g. "GLONASS
+  // L2"), satellite, and rise/set direction - what identifies *which
+  // track* this is. Timestamp and RH deliberately left out: time now
+  // lives in the chart legends below (see openArcDetail's primaryLabel),
+  // where a comparison can add a second one - a single title line can't
+  // represent that once there's more than one, and duplicating the first
+  // one there added nothing the legend didn't already say.
+  const direction = point.riseSet === 1 ? "Rising" : point.riseSet === -1 ? "Setting" : null;
+  const compass = point.azimuth_deg != null ? compassDirection(point.azimuth_deg) : null;
+  title.textContent = `${freqLabel} sat ${point.sat}`
+    + `${compass ? " - " + compass : ""}${direction ? " - " + direction : ""}`;
   status.textContent = "";
   modal.hidden = false;
+  currentArcPoint = point;
+  currentArcHostname = hostname;
 
   if (!point.arcKey) {
     status.textContent = "No raw-arc detail cached for this point - re-run GNSS-IR analysis to backfill it (older days need reprocessing to pick this up).";
     if (arcRawChart) { arcRawChart.destroy(); arcRawChart = null; }
     if (arcPeriodogramChart) { arcPeriodogramChart.destroy(); arcPeriodogramChart = null; }
+    destroyModelCharts();
+    disableComparePanel();
     return;
   }
 
@@ -983,17 +1408,35 @@ async function openArcDetail(point, freqLabel) {
     detail = await r.json();
   } catch (e) {
     status.textContent = "Couldn't load arc detail: " + e.message;
+    disableComparePanel();
     return;
   }
+
+  // Legend entries are labeled by *when* the observation is from, not
+  // what kind of curve it is ("Detrended SNR"/"Periodogram" said nothing
+  // useful once there's more than one curve - both charts always show
+  // the same kind of curve, so the timestamp is the only thing that
+  // actually distinguishes one dataset from another).
+  // Station + timestamp, always - not just timestamp when there's no
+  // comparison yet and station-prefixed only once one is added, which
+  // made the primary curve's own legend entry inconsistent with itself
+  // depending on modal state.
+  const primaryLabel = `${currentArcHostname} ${point.tDisplay}`;
+  // The periodogram chart's legend also carries each curve's RH and the
+  // nearest ground-truth soil moisture reading - both are RH-chart-only:
+  // ground truth is a moisture *estimate* comparison, which only makes
+  // sense next to the RH value gnssrefl derived it from, not next to the
+  // raw-data chart's elevation-angle curve.
+  const primaryLabelWithRh = `${withGroundTruth(primaryLabel, point.t)} (RH ${point.y.toFixed(2)}m)`;
 
   if (arcRawChart) arcRawChart.destroy();
   arcRawChart = new Chart(document.getElementById("chart-arc-raw"), {
     type: "line",
     data: {
       datasets: [{
-        label: "Detrended SNR",
+        label: primaryLabel,
         data: detail.elevation_deg.map((e, i) => ({ x: e, y: detail.dsnr[i] })),
-        borderColor: "#2563eb", pointRadius: 0, borderWidth: 1.5, tension: 0,
+        borderColor: PRIMARY_COLOR, pointRadius: 0, borderWidth: 1.5, tension: 0,
       }],
     },
     options: {
@@ -1002,7 +1445,11 @@ async function openArcDetail(point, freqLabel) {
         x: { type: "linear", title: { display: true, text: "Elevation angle (deg)" } },
         y: { title: { display: true, text: "volts/volts" } },
       },
-      plugins: { legend: { display: false }, title: { display: true, text: "Raw data", font: { size: 12 } } },
+      // Always shown, comparison or not - showing it only once a second
+      // curve exists made an otherwise-identical chart look different
+      // depending on modal state, for a legend that's cheap to always
+      // have (it's one entry: the primary observation's timestamp).
+      plugins: { legend: { display: true }, title: { display: true, text: "Raw data", font: { size: 12 } } },
     },
   });
 
@@ -1011,19 +1458,15 @@ async function openArcDetail(point, freqLabel) {
     (best, v, i) => (v > detail.periodogram_amplitude[best] ? i : best), 0);
   arcPeriodogramChart = new Chart(document.getElementById("chart-arc-periodogram"), {
     type: "line",
+    plugins: [peakLinePlugin],
     data: {
-      datasets: [
-        {
-          label: "Periodogram",
-          data: detail.periodogram_rh_m.map((rh, i) => ({ x: rh, y: detail.periodogram_amplitude[i] })),
-          borderColor: "#16a34a", pointRadius: 0, borderWidth: 1.5, tension: 0.1,
-        },
-        {
-          label: "Peak (RH)",
-          data: [{ x: detail.periodogram_rh_m[peakIdx], y: detail.periodogram_amplitude[peakIdx] }],
-          borderColor: "#dc2626", backgroundColor: "#dc2626", pointRadius: 5, showLine: false,
-        },
-      ],
+      datasets: [{
+        label: primaryLabelWithRh,
+        data: detail.periodogram_rh_m.map((rh, i) => ({ x: rh, y: detail.periodogram_amplitude[i] })),
+        // Same color as the raw-data curve above - same observation,
+        // same color across both charts.
+        borderColor: PRIMARY_COLOR, pointRadius: 0, borderWidth: 1.5, tension: 0.1,
+      }],
     },
     options: {
       animation: false, responsive: true, maintainAspectRatio: false,
@@ -1031,10 +1474,439 @@ async function openArcDetail(point, freqLabel) {
         x: { type: "linear", title: { display: true, text: "Reflector height (m)" } },
         y: { title: { display: true, text: "volts/volts" } },
       },
-      plugins: { legend: { display: false }, title: { display: true, text: "Periodogram", font: { size: 12 } } },
+      plugins: { legend: { display: true }, title: { display: true, text: "Periodogram", font: { size: 12 } } },
+    },
+  });
+  // The peak is drawn by peakLinePlugin (a vertical dashed line at the
+  // peak's RH, spanning the chart) rather than a plotted point - a dot
+  // sitting on top of the curve it's already the maximum of added a
+  // legend entry and a color for no real extra information; a line
+  // straight down to the x-axis reads directly as "this is the RH value"
+  // the way the axis title already promises.
+  arcPeriodogramChart.peakLines = [{ x: detail.periodogram_rh_m[peakIdx], color: PRIMARY_COLOR }];
+  arcPeriodogramChart.update();
+
+  renderModelCharts(detail, primaryLabel, status);
+
+  resetComparePanel();
+}
+
+// --- Same-track comparison overlay -------------------------------------
+// Lets two recordings of the same physical track (same satellite,
+// frequency, rise/set direction, azimuth within tolerance - see app.py's
+// /gnss_track_candidates) be viewed on the same two charts above: a
+// different date on this station (rainfall before/after) or the same
+// date on a different station (antenna-vs-antenna). One overlay at a
+// time, added on top of whatever openArcDetail already drew, rather than
+// a separate pair of charts - direct visual overlap is the whole point
+// (spotting a phase shift, or a wider usable elevation range).
+// One color per *observation*, not per chart - the same arc's raw SNR
+// curve, periodogram curve, and periodogram peak marker all share
+// PRIMARY_COLOR across both mini-charts; a comparison overlay (see
+// applyCompareOverlay) shares COMPARE_COLOR the same way. Different hues
+// used to creep in per-chart (blue/green/red) even though it was all one
+// observation, which read as three unrelated things rather than one.
+const PRIMARY_COLOR = "#2563eb";
+const COMPARE_COLOR = "#f97316";
+
+// Draws each entry in chart.peakLines (set directly on the chart instance,
+// not through options - simplest way to update it per open/compare/clear
+// without fighting Chart.js's own options-merge semantics for an array)
+// as a vertical dashed line spanning the plot area at that x value - the
+// periodogram's peak, i.e. the arc's reported reflector height, read
+// directly off the x-axis rather than a plotted dot that added a legend
+// entry and a color for no extra information a maximum-of-the-curve-
+// already-shows didn't convey.
+const peakLinePlugin = {
+  id: "peakLinePlugin",
+  afterDatasetsDraw(chart) {
+    const lines = chart.peakLines || [];
+    if (!lines.length) return;
+    const { ctx, chartArea, scales } = chart;
+    if (!chartArea) return;
+    ctx.save();
+    ctx.setLineDash([5, 3]);
+    ctx.lineWidth = 1.5;
+    for (const line of lines) {
+      const px = scales.x.getPixelForValue(line.x);
+      if (px < chartArea.left || px > chartArea.right) continue;
+      ctx.strokeStyle = line.color;
+      ctx.beginPath();
+      ctx.moveTo(px, chartArea.top);
+      ctx.lineTo(px, chartArea.bottom);
+      ctx.stroke();
+    }
+    ctx.restore();
+  },
+};
+
+// --- Model charts: multipath fit + Fresnel zone -------------------------
+// Both come from gnssrefl_arc_detail.py (fit_* fields and "fresnel"), not
+// computed here. The multipath chart replots the arc's detrended SNR
+// against sin(elevation) - where a single reflector's oscillation is a
+// plain, evenly-spaced sinusoid - with the least-squares sinusoid at the
+// periodogram's RH on top. The Fresnel chart is a plan view (metres east/
+// north of the antenna) of the first-Fresnel-zone ellipses and the
+// specular reflection point's track across the arc's elevation range.
+const PRIMARY_DATA_COLOR = "rgba(37, 99, 235, 0.35)";
+const COMPARE_DATA_COLOR = "rgba(249, 115, 22, 0.35)";
+
+function hasModelData(detail) {
+  return Array.isArray(detail.fit_dsnr) && detail.fresnel && Array.isArray(detail.fresnel.ellipses);
+}
+
+function destroyModelCharts() {
+  if (arcMultipathChart) { arcMultipathChart.destroy(); arcMultipathChart = null; }
+  if (arcFresnelChart) { arcFresnelChart.destroy(); arcFresnelChart = null; }
+}
+
+// Only entries without hideLegend get a legend row - a scatter of raw
+// points or one of five ellipses per observation would otherwise crowd
+// out the one line that says what each colour is.
+const modelLegendOptions = {
+  display: true,
+  labels: { filter: (item, data) => !data.datasets[item.datasetIndex].hideLegend },
+};
+
+function multipathDatasets(detail, label, color, dataColor, isCompare) {
+  const sinE = detail.elevation_deg.map(e => Math.sin(e * Math.PI / 180));
+  return [
+    {
+      label, isCompare, hideLegend: true, showLine: false,
+      data: sinE.map((x, i) => ({ x, y: detail.dsnr[i] })),
+      pointRadius: 1.5, backgroundColor: dataColor, borderColor: dataColor,
+    },
+    {
+      label: `${label} · fit A ${detail.fit_amplitude.toFixed(2)}, R² ${detail.fit_r2.toFixed(2)}`,
+      isCompare, showLine: true,
+      data: sinE.map((x, i) => ({ x, y: detail.fit_dsnr[i] })),
+      pointRadius: 0, borderWidth: 2, borderColor: color, tension: 0,
+    },
+  ];
+}
+
+function fresnelDatasets(detail, label, color, isCompare) {
+  const fz = detail.fresnel;
+  const n = fz.ellipses.length;
+  const sets = fz.ellipses.map((el, i) => {
+    // Lowest elevation is the biggest, furthest ellipse - fade it out so
+    // the higher-elevation (smaller, nearer) ones stay readable on top.
+    const alpha = 0.35 + 0.65 * (n > 1 ? i / (n - 1) : 1);
+    const pts = el.east_m.map((x, j) => ({ x, y: el.north_m[j] }));
+    let far = 0, farDist = -1;
+    pts.forEach((p, j) => { const d = Math.hypot(p.x, p.y); if (d > farDist) { farDist = d; far = j; } });
+    return {
+      label: `${Math.round(el.elevation_deg)}°`, isCompare, hideLegend: true, showLine: true,
+      data: pts, pointRadius: 0, borderWidth: 1.25, tension: 0,
+      borderColor: color, globalAlpha: alpha,
+      ellipseLabel: isCompare ? null : { text: `${Math.round(el.elevation_deg)}°`, index: far },
+    };
+  });
+  sets.push({
+    label: `${label} · specular point (RH ${detail.fit_rh_m.toFixed(2)}m)`,
+    isCompare, showLine: true, borderDash: [4, 3],
+    data: fz.specular_east_m.map((x, i) => ({ x, y: fz.specular_north_m[i] })),
+    pointRadius: 0, borderWidth: 2, borderColor: color,
+  });
+  return sets;
+}
+
+// Ellipse fading (globalAlpha per dataset) and the elevation labels next
+// to each ellipse - neither exists as a Chart.js dataset option.
+const fresnelDecorPlugin = {
+  id: "fresnelDecor",
+  beforeDatasetDraw(chart, args) {
+    const a = chart.data.datasets[args.index].globalAlpha;
+    if (a != null) { chart.ctx.save(); chart.ctx.globalAlpha = a; }
+  },
+  afterDatasetDraw(chart, args) {
+    const ds = chart.data.datasets[args.index];
+    if (ds.globalAlpha != null) chart.ctx.restore();
+    if (!ds.ellipseLabel) return;
+    const pt = args.meta.data[ds.ellipseLabel.index];
+    if (!pt) return;
+    const { ctx } = chart;
+    ctx.save();
+    ctx.fillStyle = ds.borderColor;
+    ctx.font = "11px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    ctx.fillText(ds.ellipseLabel.text, pt.x, pt.y - 3);
+    ctx.restore();
+  },
+};
+
+// Plan view is only honest at one metre per pixel on both axes - otherwise
+// a zone's elongation (the whole point of the plot) is distorted. Chart.js
+// has no equal-aspect option for linear scales, so after each layout, widen
+// whichever axis has fewer metres per pixel to match the other, centred on
+// the data. The update is deferred a tick and skipped once the two ratios
+// already agree, so it converges instead of looping.
+const equalAspectPlugin = {
+  id: "equalAspect",
+  afterLayout(chart) {
+    const area = chart.chartArea;
+    if (!area || chart._equalAspectBusy) return;
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const ds of chart.data.datasets) for (const p of ds.data) {
+      if (p.x < x0) x0 = p.x;
+      if (p.x > x1) x1 = p.x;
+      if (p.y < y0) y0 = p.y;
+      if (p.y > y1) y1 = p.y;
+    }
+    if (!isFinite(x0)) return;
+    const w = area.right - area.left, h = area.bottom - area.top;
+    const pad = 1.1;
+    const mPerPx = Math.max((x1 - x0) * pad / w, (y1 - y0) * pad / h) || 1;
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    const sx = chart.options.scales.x, sy = chart.options.scales.y;
+    const want = [cx - mPerPx * w / 2, cx + mPerPx * w / 2, cy - mPerPx * h / 2, cy + mPerPx * h / 2];
+    const have = [sx.min, sx.max, sy.min, sy.max];
+    if (have.every((v, i) => v != null && Math.abs(v - want[i]) < mPerPx)) return;
+    [sx.min, sx.max, sy.min, sy.max] = want;
+    chart._equalAspectBusy = true;
+    Promise.resolve().then(() => {
+      chart._equalAspectBusy = false;
+      if (chart.canvas) chart.update("none");  // null once destroyed (modal reopened in between)
+    });
+  },
+};
+
+function renderModelCharts(detail, primaryLabel, status) {
+  destroyModelCharts();
+  if (!hasModelData(detail)) {
+    status.textContent = "Multipath fit and Fresnel zone aren't cached for this point - re-run GNSS-IR analysis with \"Force full reprocess\" to backfill them.";
+    return;
+  }
+
+  arcMultipathChart = new Chart(document.getElementById("chart-arc-multipath"), {
+    type: "scatter",
+    data: { datasets: multipathDatasets(detail, primaryLabel, PRIMARY_COLOR, PRIMARY_DATA_COLOR, false) },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { type: "linear", title: { display: true, text: "sin(elevation)" } },
+        y: { title: { display: true, text: "volts/volts" } },
+      },
+      plugins: { legend: modelLegendOptions, title: { display: true, text: "Multipath fit", font: { size: 12 } } },
+    },
+  });
+
+  const antenna = {
+    label: "Antenna", hideLegend: true, showLine: false, data: [{ x: 0, y: 0 }],
+    pointStyle: "triangle", pointRadius: 6, backgroundColor: "#111827", borderColor: "#111827",
+  };
+  arcFresnelChart = new Chart(document.getElementById("chart-arc-fresnel"), {
+    type: "scatter",
+    plugins: [fresnelDecorPlugin, equalAspectPlugin],
+    data: { datasets: [antenna, ...fresnelDatasets(detail, primaryLabel, PRIMARY_COLOR, false)] },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { type: "linear", title: { display: true, text: "East (m)" } },
+        y: { type: "linear", title: { display: true, text: "North (m)" } },
+      },
+      plugins: {
+        legend: modelLegendOptions,
+        title: { display: true, text: "First Fresnel zone (plan view, labelled by elevation)", font: { size: 12 } },
+        tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${c.parsed.x.toFixed(1)}m E, ${c.parsed.y.toFixed(1)}m N` } },
+      },
     },
   });
 }
+
+// Replaces any previous overlay, same "one comparison at a time" rule as
+// the two charts above. A compare recording processed before these fields
+// existed just gets no overlay on these two charts.
+function applyModelOverlay(detail, compareLabel) {
+  if (!arcMultipathChart || !arcFresnelChart) return;
+  removeModelOverlay();
+  if (!hasModelData(detail)) return;
+  arcMultipathChart.data.datasets.push(
+    ...multipathDatasets(detail, compareLabel, COMPARE_COLOR, COMPARE_DATA_COLOR, true));
+  arcFresnelChart.data.datasets.push(...fresnelDatasets(detail, compareLabel, COMPARE_COLOR, true));
+  arcMultipathChart.update();
+  arcFresnelChart.update();
+}
+
+function removeModelOverlay() {
+  for (const chart of [arcMultipathChart, arcFresnelChart]) {
+    if (!chart) continue;
+    chart.data.datasets = chart.data.datasets.filter(d => !d.isCompare);
+    chart.update();
+  }
+}
+
+function disableComparePanel() {
+  document.getElementById("arc-compare-station").innerHTML = "";
+  document.getElementById("arc-compare-date").innerHTML = `<option value="">-</option>`;
+  document.getElementById("arc-compare-btn").disabled = true;
+  document.getElementById("arc-compare-clear-btn").hidden = true;
+  document.getElementById("arc-compare-status").textContent = "";
+}
+
+function resetComparePanel() {
+  const stationSel = document.getElementById("arc-compare-station");
+  stationSel.innerHTML = allStations.map(s => `<option value="${s.hostname}">${s.hostname}</option>`).join("");
+  stationSel.value = currentArcHostname;
+  document.getElementById("arc-compare-clear-btn").hidden = true;
+  loadCompareCandidates();
+}
+
+// "date|arc_key" -> candidate object, populated by loadCompareCandidates -
+// applyCompareOverlay looks a selection back up here for its t_display
+// (the actual legend label - see below), rather than re-fetching or
+// parsing it out of the option text.
+let compareCandidatesByKey = new Map();
+
+async function loadCompareCandidates() {
+  const dateSel = document.getElementById("arc-compare-date");
+  const btn = document.getElementById("arc-compare-btn");
+  const status = document.getElementById("arc-compare-status");
+  dateSel.innerHTML = `<option value="">Loading...</option>`;
+  btn.disabled = true;
+  status.textContent = "";
+
+  const compareStation = document.getElementById("arc-compare-station").value;
+  const params = new URLSearchParams({
+    station: compareStation,
+    sat: currentArcPoint.sat,
+    freq: currentArcPoint.freq,
+    azimuth: currentArcPoint.azimuth_deg,
+  });
+  // riseSet is missing (not just falsy-zero) for an arc processed before
+  // gnssrefl_pipeline started capturing it - omitting the param entirely
+  // (rather than sending "undefined") is what tells the backend to skip
+  // that filter instead of matching nothing.
+  if (currentArcPoint.riseSet !== undefined && currentArcPoint.riseSet !== null) {
+    params.set("rise_set", currentArcPoint.riseSet);
+  }
+
+  let candidates;
+  try {
+    const r = await fetch(`/gnss_track_candidates?${params}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    candidates = await r.json();
+  } catch (e) {
+    dateSel.innerHTML = `<option value="">-</option>`;
+    status.textContent = "Couldn't load candidates: " + e.message;
+    return;
+  }
+
+  // Comparing the open point against itself is never useful - only
+  // possible when browsing candidates on the same station it came from.
+  candidates = candidates.filter(c => !(
+    compareStation === currentArcHostname && c.date === currentArcPoint.date && c.arc_key === currentArcPoint.arcKey
+  ));
+
+  if (!candidates.length) {
+    dateSel.innerHTML = `<option value="">No other recordings of this track</option>`;
+    compareCandidatesByKey = new Map();
+    return;
+  }
+
+  compareCandidatesByKey = new Map(candidates.map(c => [`${c.date}|${c.arc_key}`, c]));
+  dateSel.innerHTML = candidates.map(c => {
+    const rain = c.rain_event_delta_pct != null ? ` \u{1F327}+${c.rain_event_delta_pct}%` : "";
+    const rh = c.rh_m != null ? `RH ${c.rh_m.toFixed(2)}m` : "RH n/a";
+    return `<option value="${c.date}|${c.arc_key}">${c.t_display} (${rh})${rain}</option>`;
+  }).join("");
+  btn.disabled = false;
+}
+
+async function applyCompareOverlay() {
+  const selectedKey = document.getElementById("arc-compare-date").value;
+  const [date, arcKey] = selectedKey.split("|");
+  const compareStation = document.getElementById("arc-compare-station").value;
+  const status = document.getElementById("arc-compare-status");
+  if (!date || !arcKey) return;
+
+  let detail;
+  try {
+    const r = await fetch(`/gnss_arc_detail/${date}/${arcKey}?station=${encodeURIComponent(compareStation)}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    detail = await r.json();
+  } catch (e) {
+    status.textContent = "Couldn't load comparison detail: " + e.message;
+    return;
+  }
+
+  // Station + timestamp, same format as primaryLabel above - always
+  // prefixed, not just when the compare station differs from the
+  // primary one, so the label format doesn't change depending on which
+  // station happens to be selected.
+  const candidate = compareCandidatesByKey.get(selectedKey);
+  const compareLabel = `${compareStation} ${candidate ? candidate.t_display : date}`;
+  const compareRh = detail.rh_m != null ? detail.rh_m.toFixed(2) + "m" : "n/a";
+  // Same reasoning as primaryLabelWithRh above - ground truth and RH are
+  // both RH-chart-only, not on the raw-data chart's own legend.
+  const compareLabelWithRh =
+    `${withGroundTruth(compareLabel, candidate ? candidate.t : null)} (RH ${compareRh})`;
+
+  // Drop any previously-added overlay before adding the new one - one
+  // comparison at a time keeps both charts readable, rather than
+  // stacking every selection ever made in this modal session. isCompare
+  // (not the label, which no longer has a "Compare:" prefix to key off
+  // of) is what marks a dataset as the removable overlay.
+  arcRawChart.data.datasets = arcRawChart.data.datasets.filter(d => !d.isCompare);
+  // Solid, same as the primary curve - color alone (COMPARE_COLOR)
+  // distinguishes the two, not line style. A dashed line for what's
+  // otherwise the same physical quantity (a detrended-SNR waveform)
+  // makes exactly the subtle phase-shift comparison this panel exists
+  // for harder to read, not easier.
+  arcRawChart.data.datasets.push({
+    label: compareLabel,
+    isCompare: true,
+    data: detail.elevation_deg.map((e, i) => ({ x: e, y: detail.dsnr[i] })),
+    borderColor: COMPARE_COLOR, pointRadius: 0, borderWidth: 1.5, tension: 0,
+  });
+  arcRawChart.update();
+
+  const peakIdx = detail.periodogram_amplitude.reduce(
+    (best, v, i) => (v > detail.periodogram_amplitude[best] ? i : best), 0);
+  arcPeriodogramChart.data.datasets = arcPeriodogramChart.data.datasets.filter(d => !d.isCompare);
+  arcPeriodogramChart.data.datasets.push({
+    label: compareLabelWithRh,
+    isCompare: true,
+    data: detail.periodogram_rh_m.map((rh, i) => ({ x: rh, y: detail.periodogram_amplitude[i] })),
+    borderColor: COMPARE_COLOR, pointRadius: 0, borderWidth: 1.5, tension: 0.1,
+  });
+  // peakLines[0] is always the primary curve's peak (set in
+  // openArcDetail) - a compare peak replaces whatever was in slot 1
+  // rather than accumulating, matching "one comparison at a time" above.
+  arcPeriodogramChart.peakLines = [arcPeriodogramChart.peakLines[0],
+    { x: detail.periodogram_rh_m[peakIdx], color: COMPARE_COLOR }];
+  arcPeriodogramChart.update();
+
+  applyModelOverlay(detail, compareLabel);
+
+  status.textContent = `Comparing against ${compareLabel} (RH ${compareRh})`;
+  document.getElementById("arc-compare-clear-btn").hidden = false;
+}
+
+function clearCompareOverlay() {
+  if (arcRawChart) {
+    arcRawChart.data.datasets = arcRawChart.data.datasets.filter(d => !d.isCompare);
+    arcRawChart.update();
+  }
+  if (arcPeriodogramChart) {
+    arcPeriodogramChart.data.datasets = arcPeriodogramChart.data.datasets.filter(d => !d.isCompare);
+    // Drop back to just the primary peak line (slot 0) - see
+    // applyCompareOverlay's matching comment.
+    arcPeriodogramChart.peakLines = [arcPeriodogramChart.peakLines[0]];
+    arcPeriodogramChart.update();
+  }
+  removeModelOverlay();
+  document.getElementById("arc-compare-clear-btn").hidden = true;
+  document.getElementById("arc-compare-status").textContent = "";
+}
+
+document.getElementById("arc-compare-station").addEventListener("change", loadCompareCandidates);
+document.getElementById("arc-compare-date").addEventListener("change", (e) => {
+  document.getElementById("arc-compare-btn").disabled = !e.target.value;
+});
+document.getElementById("arc-compare-btn").addEventListener("click", applyCompareOverlay);
+document.getElementById("arc-compare-clear-btn").addEventListener("click", clearCompareOverlay);
 
 function closeArcDetail() {
   document.getElementById("arc-detail-modal").hidden = true;

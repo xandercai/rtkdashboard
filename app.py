@@ -6,6 +6,7 @@
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from flask import Flask, abort, flash, redirect, render_template, request, send_from_directory, url_for
 
@@ -52,14 +53,61 @@ def _requested_hostname():
     return raw
 
 
+def _parse_local_date(raw):
+    """"YYYY-MM-DD" -> that calendar day's local midnight (config.DISPLAY_TZ_NAME)
+    as a UTC-aware datetime, or None for empty/garbage input."""
+    if not raw:
+        return None
+    try:
+        d = datetime.strptime(raw, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return d.replace(tzinfo=ZoneInfo(config.DISPLAY_TZ_NAME)).astimezone(timezone.utc)
+
+
+def _requested_range():
+    """What time range the page should show: either an explicit start/end
+    date (query string or form body, local calendar days, both inclusive) or,
+    if neither is given, the last N days. Returns (days, start_str, end_str,
+    cutoff) where start_str/end_str are the validated "YYYY-MM-DD" strings
+    ("" when not in use) for redisplaying/forwarding, and cutoff is what the
+    parsers.get_* functions take (a datetime, a parsers.Window, or - never
+    here - None). An end before the start is swapped rather than rejected."""
+    days = _requested_days()
+    start = _parse_local_date(request.values.get("start"))
+    end = _parse_local_date(request.values.get("end"))
+    if start is None and end is None:
+        return days, "", "", datetime.now(timezone.utc) - timedelta(days=days)
+    tz = ZoneInfo(config.DISPLAY_TZ_NAME)
+    if start is None:
+        start = end - timedelta(days=days - 1)
+    if end is not None and end < start:
+        start, end = end, start
+    start_str = start.astimezone(tz).strftime("%Y-%m-%d")
+    end_str = end.astimezone(tz).strftime("%Y-%m-%d") if end is not None else ""
+    # "end" is an inclusive calendar day, so the exclusive bound is the next
+    # local midnight (computed on the local date, not +24h, to survive DST).
+    end_excl = None
+    if end is not None:
+        end_local = end.astimezone(tz).date() + timedelta(days=1)
+        end_excl = datetime(end_local.year, end_local.month, end_local.day, tzinfo=tz).astimezone(timezone.utc)
+    return days, start_str, end_str, parsers.Window(start, end_excl)
+
+
+def _range_args(start_str, end_str, days):
+    """Query args that reproduce the current range in a link/redirect."""
+    if start_str or end_str:
+        return {k: v for k, v in (("start", start_str), ("end", end_str), ("days", days)) if v}
+    return {"days": days}
+
+
 @app.route("/")
 def dashboard():
     hostname = _requested_hostname()
-    days = _requested_days()
     # A plain elapsed-time cutoff (now - N days) is timezone-invariant - it's
     # the same instant no matter what zone you compute "now" in. What
     # actually needed fixing was display (see parsers._to_display), not this.
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    days, start_str, end_str, cutoff = _requested_range()
 
     voltage_series = parsers.get_voltage_series(hostname, cutoff)
     power_stats = parsers.get_load_power_stats(hostname, cutoff)
@@ -93,6 +141,8 @@ def dashboard():
         all_stations=stations.list_stations(),
         display_tz=config.DISPLAY_TZ_NAME,
         days=days,
+        range_start=start_str,
+        range_end=end_str,
         temperature_series=temperature_series,
         voltage_series=voltage_series,
         data_size_series=data_size_series,
@@ -101,15 +151,20 @@ def dashboard():
         gnss_quality_series=gnss_quality_series,
         gnss_summary=gnss_summary,
         gnss_daily_arc_counts=parsers.get_gnss_daily_arc_counts(hostname, cutoff),
+        gnss_rejected_arcs=parsers.get_gnss_rejected_arcs(hostname, cutoff),
         gnssrefl_status=gnssrefl_pipeline.status(hostname),
+        rinex_warning=gnssrefl_pipeline.rinex_storage_warning(),
         latest_data_t_display=parsers.get_latest_data_timestamp(hostname),
+        # Site-wide, not per-station (see parsers.get_ground_truth_soil_moisture) -
+        # every station's dashboard can show it, since it's the same physical sensor.
+        ground_truth_series=parsers.get_ground_truth_soil_moisture(cutoff),
     )
 
 
 @app.route("/refresh", methods=["POST"])
 def refresh():
     hostname = _requested_hostname()
-    days = _requested_days()
+    days, start_str, end_str, _ = _requested_range()
     full = request.values.get("force") == "1"
     results = rclone_sync.sync_all(hostname, full=full)
     failures = {source: err for source, err in results.items() if err}
@@ -119,14 +174,14 @@ def refresh():
         flash("Full sync from Google Drive completed.", "success")
     else:
         flash("Synced successfully.", "success")
-    return redirect(url_for("dashboard", station=hostname, days=days))
+    return redirect(url_for("dashboard", station=hostname, **_range_args(start_str, end_str, days)))
 
 
 @app.route("/refresh_gnssrefl", methods=["POST"])
 def refresh_gnssrefl():
     hostname = _requested_hostname()
-    days = _requested_days()
-    # UBX->RINEX conversion plus gnssrefl's rinex2snr/gnssir/vwc steps take
+    days, start_str, end_str, _ = _requested_range()
+    # Raw GNSS->RINEX conversion plus gnssrefl's rinex2snr/gnssir/vwc steps take
     # minutes for a multi-day backlog, so this runs in a background thread
     # rather than blocking the request like /refresh does - the dashboard
     # just re-reads whatever's in cache/gnss_quality and cache/soil_moisture
@@ -147,7 +202,7 @@ def refresh_gnssrefl():
         flash(f"{msg} - this can take a few minutes for a multi-day backlog.", "success")
     else:
         flash("GNSS-IR analysis is already running.", "error")
-    return redirect(url_for("dashboard", station=hostname, days=days))
+    return redirect(url_for("dashboard", station=hostname, **_range_args(start_str, end_str, days)))
 
 
 @app.route("/gnssrefl_status")
@@ -171,8 +226,7 @@ def compare():
     if stations.get_station(hostname_b) is None:
         abort(404, description=f"Unknown station {hostname_b!r}")
 
-    days = _requested_days()
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    days, start_str, end_str, cutoff = _requested_range()
 
     return render_template(
         "compare.html",
@@ -180,11 +234,37 @@ def compare():
         hostname_b=hostname_b,
         display_tz=config.DISPLAY_TZ_NAME,
         days=days,
+        range_args=_range_args(start_str, end_str, days),
         gnss_quality_series_a=parsers.get_gnss_quality_series(hostname_a, cutoff),
         gnss_quality_series_b=parsers.get_gnss_quality_series(hostname_b, cutoff),
         latest_data_t_display_a=parsers.get_latest_data_timestamp(hostname_a),
         latest_data_t_display_b=parsers.get_latest_data_timestamp(hostname_b),
+        # Site-wide, not per-station (see parsers.get_ground_truth_soil_moisture) -
+        # one shared line, not "A's ground truth" vs "B's" (same physical sensor).
+        ground_truth_series=parsers.get_ground_truth_soil_moisture(cutoff),
     )
+
+
+@app.route("/gnss_track_candidates")
+def gnss_track_candidates():
+    """Candidate arcs to overlay against a point already open in the arc-
+    detail modal (see templates/dashboard.html's "compare with..." panel):
+    same satellite/frequency/direction, azimuth within tolerance, on
+    *this* request's station - which can be a different station than the
+    one the original point came from (see _requested_hostname; the
+    "station" query param, same as everywhere else), since comparing two
+    antennas at the same physical site is exactly as valid a use case as
+    comparing two dates on the same antenna."""
+    hostname = _requested_hostname()
+    try:
+        sat = int(request.args["sat"])
+        freq = int(request.args["freq"])
+        azimuth = float(request.args["azimuth"])
+    except (KeyError, ValueError):
+        abort(400, description="sat, freq and azimuth query params are required")
+    raw_rise_set = request.args.get("rise_set", "")
+    rise_set = int(raw_rise_set) if raw_rise_set else None
+    return parsers.get_gnss_track_candidates(hostname, sat, freq, rise_set, azimuth)
 
 
 @app.route("/gnss_arc_detail/<date>/<key>")

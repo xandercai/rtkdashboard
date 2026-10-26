@@ -47,6 +47,30 @@ STATIONS = [
         # docstring). Change this if a station's settings.conf ever uses a
         # different rotation period.
         "upload_rotate_hours": 2,
+        # "e1_deg"/"e2_deg": gnssir's elevation mask (min/max degrees above
+        # horizon) - optional, defaults to gnssrefl's own 5/25 (see
+        # gnssrefl_pipeline._ensure_station_registered) if omitted, which
+        # is what both stations below still use after an experiment
+        # (2026-08-25) that widened it and made things *worse*, worth
+        # recording here so it isn't retried blind:
+        #
+        # extract_arcs.py masks the raw elevation data to [e1, e2] *before*
+        # an arc's observed start/end is ever measured ("e_mask = (arc_ele
+        # > e1) & (arc_ele <= e2)"), and utils.pre_check_arc/
+        # check_arc_quality then reject any arc whose *masked* start/end
+        # isn't within ediff (2deg, unchanged default) of that *entire*
+        # requested window - not "accept anything inside this range" but
+        # "only accept a sweep that completes this whole range". Raising
+        # e2 therefore raises the bar an arc has to clear (e.g. e2=25
+        # needs the arc to reach >=23deg; e2=30 needs >=28deg) - it can
+        # only ever shrink the accepted set, never grow it, since nothing
+        # here observes above ~30deg regardless of what's requested (and
+        # 0-45, tried first, asked for an unsatisfiable 0-43deg sweep -
+        # 0 kept arcs across 27 days/15000 candidates). Testing whether
+        # there's real signal above 25deg needs a separate side-by-side
+        # run compared against this default, not a changed default -
+        # gnssir's own QC design has no way to widen a range without
+        # losing some of what the narrower one already had.
     },
     {
         "hostname": "gripi002",
@@ -57,6 +81,25 @@ STATIONS = [
         "antenna_height_m": 1.9,
         "rinex_version": "3.04",
         "upload_rotate_hours": 2,
+    },
+    {
+        "hostname": "gripi003",
+        "gnssrefl_station": "ilam",
+        # Provisional: convbin's own single-point position from a short
+        # indoor (window-side) test recording on 2026-10-14 - good to tens
+        # of metres, which is all gnssrefl needs, but replace with the
+        # real antenna position once it's installed outdoors. Height is
+        # ellipsoidal.
+        "lat": -43.5225,
+        "lon": 172.5835,
+        "height_m": 36.0,
+        "rinex_version": "3.04",
+        "upload_rotate_hours": 2,
+        # RINEX header receiver (convbin -hr) - optional, defaults to
+        # "u-blox/F9P". The raw format itself (.rtcm3 here) is detected
+        # from the archived file's extension, not configured - see
+        # gnssrefl_pipeline._RAW_FORMATS.
+        "receiver": "Unicore/UM980",
     },
 ]
 

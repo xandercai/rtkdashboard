@@ -36,6 +36,16 @@ def cache_dir_for(source, hostname):
     return path
 
 
+def ground_truth_cache_dir():
+    # Not partitioned by hostname like cache_dir_for above - the TMS-4
+    # ground-truth data is a single physical sensor's readings for the
+    # site, manually uploaded rather than produced by any one rtkbase
+    # station, so there's no per-station filename to partition by either.
+    path = os.path.join(config.CACHE_DIR, "ground_truth")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def _run_rclone_copy(remote, local_dir, include_pattern, max_age_days, timeout):
     cmd = [
         "rclone", "copy", remote, local_dir,
@@ -72,13 +82,18 @@ def _run_rclone_copy(remote, local_dir, include_pattern, max_age_days, timeout):
 
 
 def sync_all(hostname, full=False):
-    """Sync all four remotes for one station into its cache subdirectory.
-    Returns {source: error_or_None}. Scoped to a single hostname - called
-    once per station (see app.py's /refresh, which syncs whichever station
-    is currently selected) rather than looping over every registered
-    station on every click, since that could mean dozens of stations'
-    worth of rclone calls for a button the user pressed to refresh the one
-    they're looking at.
+    """Sync every per-station remote (see REMOTES) into that station's
+    cache subdirectory, plus the site-wide ground-truth remote (not
+    partitioned by hostname - see ground_truth_cache_dir). Returns
+    {source: error_or_None}, "ground_truth" included alongside the
+    per-station sources. Scoped to a single hostname for the per-station
+    part - called once per station (see app.py's /refresh, which syncs
+    whichever station is currently selected) rather than looping over
+    every registered station on every click, since that could mean dozens
+    of stations' worth of rclone calls for a button the user pressed to
+    refresh the one they're looking at. Ground truth gets synced on every
+    call regardless of which station triggered it - it's one small,
+    infrequently-updated dataset, not worth a separate refresh path.
 
     A routine sync (full=False) always pulls just config.SYNC_WINDOW_DAYS of
     recent history, independent of how many days the dashboard's chart
@@ -118,4 +133,21 @@ def sync_all(hostname, full=False):
         except Exception as exc:
             logger.warning("sync failed for %s (%s): %s", source, hostname, exc)
             results[source] = str(exc)
+
+    try:
+        # No max_age_days cutoff, unlike the per-station sources above:
+        # those upload on a predictable ~2-hourly cadence, so "just pull
+        # the last few days" reliably catches whatever's new since the
+        # last sync. TMS exports are irregular and infrequent (this
+        # deployment's only CSV so far is a multi-week bulk export dumped
+        # once) - a routine sync's default 5-day window would otherwise
+        # miss it entirely most of the time. The whole folder is a
+        # handful of small files, so scanning it in full on every sync
+        # costs nothing worth optimizing away.
+        _run_rclone_copy(config.GDRIVE_GT_REMOTE, ground_truth_cache_dir(), "*", None, timeout)
+        results["ground_truth"] = None
+    except Exception as exc:
+        logger.warning("sync failed for ground_truth: %s", exc)
+        results["ground_truth"] = str(exc)
+
     return results

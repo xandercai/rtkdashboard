@@ -2,16 +2,18 @@
 # data. Nothing here touches the network - it only reads files already
 # synced to disk.
 
+import csv
 import glob
 import json
 import os
 import re
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple, Optional
 from zoneinfo import ZoneInfo
 
 import config
 import stations
-from rclone_sync import cache_dir_for
+from rclone_sync import cache_dir_for, ground_truth_cache_dir
 
 _DISPLAY_TZ = ZoneInfo(config.DISPLAY_TZ_NAME)
 
@@ -125,11 +127,28 @@ def _parse_ts(t):
     return dt.astimezone(timezone.utc)
 
 
+class Window(NamedTuple):
+    """A [start, end) time range (UTC-aware datetimes). Every get_* function
+    below takes "cutoff", which is either a plain datetime (lower bound only:
+    "the last N days") or one of these (an explicit date range picked on the
+    dashboard); end=None means open-ended."""
+    start: datetime
+    end: Optional[datetime]
+
+
+def _in_window(parsed, cutoff):
+    if cutoff is None:
+        return True
+    if isinstance(cutoff, Window):
+        return parsed >= cutoff.start and (cutoff.end is None or parsed < cutoff.end)
+    return parsed >= cutoff
+
+
 def _after_cutoff(t, cutoff):
     if cutoff is None:
         return True
     parsed = _parse_ts(t)
-    return parsed is not None and parsed >= cutoff
+    return parsed is not None and _in_window(parsed, cutoff)
 
 
 def _to_display(t):
@@ -334,14 +353,16 @@ def _alert_from_json_line(entry):
     STEP 2): has a real PRIORITY field, so this is where the general
     "unpredictable alert" detection actually happens. A keyword match still
     wins the category label when both apply, since it's more specific."""
-    message = entry.get("MESSAGE", "")
+    # `or ""`, not .get's default: journald can emit "MESSAGE": null, which
+    # .get("MESSAGE", "") passes through as None and crashes the regex below.
+    message = entry.get("MESSAGE") or ""
     if isinstance(message, list):
         # journald emits non-UTF8 payloads as raw byte arrays instead of a
         # string - rare, but don't let it crash the page.
         message = "".join(chr(b) for b in message)
 
-    if _is_ignored(message):
-        return None  # known-benign even though it happens to log at err+
+    if not message or _is_ignored(message):
+        return None  # empty (nothing to show) or known-benign even though it happens to log at err+
 
     info = _match_keyword(message) or _priority_info(entry.get("PRIORITY"))
     if info is None:
@@ -398,7 +419,7 @@ def get_load_power_stats(hostname, cutoff=None, bucket_seconds=3600):
             parsed = _parse_ts(t)
             if parsed is None:
                 continue
-            if cutoff is not None and parsed < cutoff:
+            if not _in_window(parsed, cutoff):
                 continue
             try:
                 watts = float(raw_w)
@@ -465,7 +486,7 @@ def get_gnss_daily_arc_counts(hostname, cutoff=None):
     constellation, from the day's arc_counts) versus rejected during QC
     (a single total - a rejected arc has no RH value worth attributing to
     one constellation's color, just a count - see
-    gnssrefl_pipeline._count_rejected_arcs). Day-level, unlike
+    gnssrefl_pipeline._process_failqc_file). Day-level, unlike
     get_gnss_quality_series's per-arc points."""
     points = []
     for r in _read_json_files("gnss_quality", hostname):
@@ -484,6 +505,31 @@ def get_gnss_daily_arc_counts(hostname, cutoff=None):
         })
     points.sort(key=lambda p: p["t"])
     return points
+
+
+def get_gnss_rejected_arcs(hostname, cutoff=None):
+    """Arcs gnssir's QC rejected (no usable periodogram peak), across every
+    processed day in range - only what a sky plot needs to draw them as
+    the "no good data here" counterpart to get_gnss_quality_series's kept
+    arcs: constellation, satellite, azimuth and the elevation span the arc
+    actually covered. See gnssrefl_pipeline._process_failqc_file for where
+    "rejected_arcs" comes from.
+
+    Days processed before "rejected_arcs" existed contribute nothing here -
+    same "needs reprocessing to backfill" situation as arc_key/elevation
+    elsewhere in this pipeline, not a real zero-rejection day.
+    """
+    arcs = []
+    for r in _read_json_files("gnss_quality", hostname):
+        date_str = r.get("date")
+        if not date_str:
+            continue
+        if not _after_cutoff(_day_noon_iso(date_str), cutoff):
+            continue
+        for arc in r.get("rejected_arcs", []):
+            if arc.get("azimuth_deg") is not None:
+                arcs.append({**arc, "date": date_str})
+    return arcs
 
 
 def get_soil_moisture_series(hostname, cutoff=None):
@@ -569,3 +615,181 @@ def get_latest_data_timestamp(hostname):
         for p in series
     ]
     return _to_display(max(candidates)) if candidates else None
+
+
+_TRACK_AZIMUTH_TOLERANCE_DEG = 3.0
+
+
+def get_gnss_track_candidates(hostname, sat, freq, rise_set, azimuth_deg,
+                                azimuth_tolerance_deg=_TRACK_AZIMUTH_TOLERANCE_DEG):
+    """Every cached arc for this station that's plausibly "the same track"
+    as (sat, freq, rise_set, azimuth_deg) - same satellite, same frequency
+    (which already implies constellation - see gnssrefl_pipeline.
+    _FREQ_SYSTEM - so system isn't a separate filter here), same
+    rise-vs-set direction, azimuth within tolerance - across this
+    station's *entire* processed history, not just the dashboard's
+    current "days" range: picking a before/after-rain pair can mean going
+    back weeks, and a repeating track's azimuth only drifts a degree or
+    two day to day. rise_set may be None (an arc processed before
+    gnssrefl_pipeline._process_results_file started capturing it) - in
+    that case the direction filter is skipped entirely rather than
+    excluding everything, since there's nothing to compare it against.
+
+    Only arcs with a cached "arc_key" (see
+    gnssrefl_pipeline._write_arc_details) are returned - no raw
+    SNR/periodogram detail cached means nothing to actually overlay, so
+    there's nothing useful to offer as a comparison candidate.
+    "rain_event_delta_pct" (see get_rain_event_dates) rides along per
+    candidate so the UI can flag likely before/after-rain dates inline,
+    rather than needing a separate recommendation flow.
+    """
+    rain_events = get_rain_event_dates()
+    candidates = []
+    for r in _read_json_files("gnss_quality", hostname):
+        date_str = r.get("date")
+        if not date_str:
+            continue
+        for arc in r.get("arcs", []):
+            if not arc.get("arc_key"):
+                continue
+            if arc.get("sat") != sat or arc.get("freq") != freq:
+                continue
+            if rise_set is not None and arc.get("rise_set") != rise_set:
+                continue
+            az = arc.get("azimuth_deg")
+            if az is None or abs(((az - azimuth_deg + 180) % 360) - 180) > azimuth_tolerance_deg:
+                continue
+            candidates.append({
+                "date": date_str,
+                "arc_key": arc["arc_key"],
+                "t": arc["t"],
+                "t_display": _to_display(arc["t"]),
+                "rh_m": arc.get("rh_m"),
+                "azimuth_deg": az,
+                "rain_event_delta_pct": rain_events.get(date_str),
+            })
+    candidates.sort(key=lambda c: c["t"])
+    return candidates
+
+
+# Day-over-day rise in TOMST ground-truth soil moisture (see
+# get_ground_truth_soil_moisture) big enough to flag as a likely rain
+# event - a loose, unvalidated threshold (there's no independent rainfall
+# record to tune it against yet), meant only to annotate candidate dates
+# in the track-comparison picker, not as a hard rain/no-rain classifier.
+_RAIN_EVENT_MIN_DELTA_PCT = 3.0
+
+
+def get_rain_event_dates():
+    """Site-wide dates (YYYY-MM-DD) where the ground-truth sensor's daily
+    average VWC rose by at least _RAIN_EVENT_MIN_DELTA_PCT percentage
+    points versus the previous day - see get_gnss_track_candidates, the
+    only current caller. {} if no ground-truth data (or no calibration
+    file) has synced yet - see get_ground_truth_soil_moisture."""
+    daily = {}
+    for p in get_ground_truth_soil_moisture():
+        vwc = p.get("vwc_percent")
+        if vwc is None:
+            continue
+        daily.setdefault(p["t"][:10], []).append(vwc)
+    daily_avg = sorted((date_str, sum(vs) / len(vs)) for date_str, vs in daily.items())
+    events = {}
+    for (_, prev_avg), (date_str, avg) in zip(daily_avg, daily_avg[1:]):
+        delta = avg - prev_avg
+        if delta >= _RAIN_EVENT_MIN_DELTA_PCT:
+            events[date_str] = round(delta, 1)
+    return events
+
+
+# TOMST's TMS Calibr utility writes this as the first line of a plain-text
+# calibration file, one per soil/site: a quadratic mapping from raw TMS
+# moisture signal to volumetric water content (0-1). The file's own name
+# isn't something to rely on (it's whatever the person who ran the
+# calibration tool called it), just this line's content.
+_GT_CALIBRATION_RE = re.compile(
+    r"FA\s*=\s*(?P<fa>-?[\d.]+)\s*,\s*FB\s*=\s*(?P<fb>-?[\d.]+)\s*,\s*FC\s*=\s*(?P<fc>-?[\d.]+)"
+)
+
+
+def _ground_truth_calibration():
+    """(a, b, c) quadratic coefficients (raw -> VWC 0-1), or None if no
+    calibration file has synced yet - see _GT_CALIBRATION_RE."""
+    for path in glob.glob(os.path.join(ground_truth_cache_dir(), "*.txt")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                first_line = f.readline()
+        except OSError:
+            continue
+        m = _GT_CALIBRATION_RE.search(first_line)
+        if m:
+            return float(m["fa"]), float(m["fb"]), float(m["fc"])
+    return None
+
+
+def get_ground_truth_soil_moisture(cutoff=None):
+    """Real (not gnssrefl-estimated) soil moisture from a TOMST TMS-4
+    datalogger physically installed at the site - lets the RH chart show
+    actual ground truth alongside (or instead of) gnssrefl's own
+    reflectometry-derived VWC estimate (see get_soil_moisture_series).
+    Optional: [] if no TMS data has been uploaded to the GNSS_IR_GT Drive
+    folder for this deployment.
+
+    vwc_percent here is only the *uncalibrated-for-temperature* quadratic
+    estimate (vwc = a*raw^2 + b*raw + c, using the site's own FA/FB/FC) -
+    TOMST's full calibration also corrects the raw signal against the
+    probe's own soil-temperature reading before this step, since water's
+    dielectric constant shifts with temperature (see myClim's
+    mc_calc_vwc, https://rdrr.io/cran/myClim/src/R/calc.R). That
+    correction needs additional constants (a reference temperature plus
+    per-generation and per-device drift/calibration factors) that aren't
+    in the FA/FB/FC file alone, so vwc_percent is missing here entirely -
+    absent, not a wrong value - until those are available. Good enough to
+    see the shape of moisture change over time; not a precise absolute
+    percentage yet.
+    """
+    calibration = _ground_truth_calibration()
+    points = []
+    for path in glob.glob(os.path.join(ground_truth_cache_dir(), "data_*.csv")):
+        try:
+            f = open(path, encoding="utf-8", newline="")
+        except OSError:
+            continue
+        with f:
+            for row in csv.reader(f, delimiter=";"):
+                # Columns (TOMST TMS-4 manual): index; date/time (UTC);
+                # time zone config; T1 (soil, bottom); T2 (surface,
+                # middle); T3 (air, top); raw moisture count; a fixed
+                # legacy value (always 202 on this device - "developed
+                # for a previous generation of sensors and is no longer
+                # relevant" per TOMST's own docs); errFlag (1 = the
+                # device couldn't read its own clock chip, so the
+                # timestamp on this row isn't trustworthy).
+                if len(row) < 9:
+                    continue
+                try:
+                    dt = datetime.strptime(row[1].strip(), "%Y.%m.%d %H:%M").replace(tzinfo=timezone.utc)
+                    soil_temp_c = float(row[3])
+                    surface_temp_c = float(row[4])
+                    air_temp_c = float(row[5])
+                    raw = float(row[6])
+                    err_flag = int(row[8])
+                except (ValueError, IndexError):
+                    continue  # header row, blank line, or a field TOMST's export didn't fill in
+                if err_flag:
+                    continue
+                t = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                if not _after_cutoff(t, cutoff):
+                    continue
+                point = {
+                    "t": t, "t_display": _to_display(t),
+                    "soil_temp_c": soil_temp_c, "surface_temp_c": surface_temp_c, "air_temp_c": air_temp_c,
+                    "moisture_raw": raw,
+                }
+                if calibration is not None:
+                    a, b, c = calibration
+                    vwc = a * raw * raw + b * raw + c
+                    point["vwc_percent"] = round(min(max(vwc, 0.0), 1.0) * 100, 2)
+                points.append(point)
+
+    points.sort(key=lambda p: p["t"])
+    return points

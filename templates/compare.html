@@ -41,8 +41,8 @@
 <body>
   <h1>Compare stations: {{ hostname_a }} vs {{ hostname_b }}</h1>
   <div class="sub">
-    GNSS-IR reflector height only - see <a href="{{ url_for('dashboard', station=hostname_a, days=days) }}">{{ hostname_a }}</a>
-    or <a href="{{ url_for('dashboard', station=hostname_b, days=days) }}">{{ hostname_b }}</a> for the full per-station dashboard.
+    GNSS-IR reflector height only - see <a href="{{ url_for('dashboard', station=hostname_a, **range_args) }}">{{ hostname_a }}</a>
+    or <a href="{{ url_for('dashboard', station=hostname_b, **range_args) }}">{{ hostname_b }}</a> for the full per-station dashboard.
     All times shown in {{ display_tz }}.
     Latest synced data: {{ hostname_a }}: {{ latest_data_t_display_a or "none yet" }},
     {{ hostname_b }}: {{ latest_data_t_display_b or "none yet" }}.
@@ -101,6 +101,22 @@
           <span>&deg;</span>
         </div>
       </div>
+      <div class="filter-group">
+        <label>&nbsp;</label>
+        <label style="font-weight: normal;">
+          <input type="checkbox" id="filter-hide-arc-points" style="vertical-align: middle;">
+          Hide arc points (keep smoothed lines)
+        </label>
+      </div>
+      {% if ground_truth_series %}
+      <div class="filter-group">
+        <label>&nbsp;</label>
+        <label style="font-weight: normal;">
+          <input type="checkbox" id="filter-show-ground-truth" style="vertical-align: middle;">
+          Show real soil moisture (TMS-4 ground truth)
+        </label>
+      </div>
+      {% endif %}
       <button type="button" onclick="clearFilters()">Clear filters</button>
     </div>
     <div class="hint" id="filter-hint">
@@ -137,6 +153,11 @@ const hostnameA = {{ hostname_a | tojson }};
 const hostnameB = {{ hostname_b | tojson }};
 const seriesA = {{ gnss_quality_series_a | tojson }};
 const seriesB = {{ gnss_quality_series_b | tojson }};
+// Real TMS-4 ground truth (see parsers.get_ground_truth_soil_moisture) -
+// site-wide, one shared line for both stations rather than "A's" vs "B's"
+// (same physical sensor either way).
+const groundTruthSeries = {{ ground_truth_series | tojson }};
+const GROUND_TRUTH_LABEL = "Soil moisture (TMS-4 ground truth)";
 
 const csvField = v => `"${String(v).replace(/"/g, '""')}"`;
 function downloadCsv(rows, filenameSuffix) {
@@ -305,7 +326,7 @@ function filterReject(p, f) {
   return null;
 }
 
-function stationDatasets(hostname, series, style, filters) {
+function stationDatasets(hostname, series, style, filters, hideArcPoints) {
   const kept = [];
   let hiddenNoElevation = 0;
   for (const p of series) {
@@ -316,7 +337,10 @@ function stationDatasets(hostname, series, style, filters) {
   if (!kept.length) return { datasets: [], hiddenNoElevation, keptCount: 0 };
   return {
     datasets: [
-      {
+      // Opt-in hide (default shown) - the smoothed line below stays
+      // regardless, so this is purely about decluttering the view, not
+      // about filtering which arcs count towards it.
+      ...(hideArcPoints ? [] : [{
         label: `${hostname} arcs`,
         data: kept.map(p => ({
           x: toNaive(p.t_display), y: p.rh_m,
@@ -326,7 +350,7 @@ function stationDatasets(hostname, series, style, filters) {
         })),
         backgroundColor: style.pointColor,
         pointRadius: 3, pointHoverRadius: 5,
-      },
+      }]),
       {
         type: "line",
         label: `${hostname} smoothed`,
@@ -339,26 +363,48 @@ function stationDatasets(hostname, series, style, filters) {
   };
 }
 
+// Single shared line (see groundTruthSeries above - one physical sensor,
+// not per-station) - built the same way dashboard.html's RH chart builds
+// its own ground-truth overlay.
+function groundTruthDataset(showGroundTruth) {
+  if (!showGroundTruth || !groundTruthSeries.length) return [];
+  return [{
+    type: "line",
+    label: GROUND_TRUTH_LABEL,
+    data: groundTruthSeries.map(p => ({
+      x: toNaive(p.t_display), y: p.vwc_percent ?? null,
+      moistureRaw: p.moisture_raw, soilTempC: p.soil_temp_c,
+    })),
+    borderColor: "#f97316", backgroundColor: "#f97316",
+    borderWidth: 2.5, pointRadius: 0, tension: 0.1, fill: false,
+    spanGaps: true, yAxisID: "yGroundTruth",
+  }];
+}
+
 let compareChart = null;
 const canvas = document.getElementById("chart-compare");
 const SMOOTHED_LABELS = new Set([`${hostnameA} smoothed`, `${hostnameB} smoothed`]);
+const ON_TOP_LABELS = new Set([...SMOOTHED_LABELS, GROUND_TRUTH_LABEL]);
 
 if (canvas) {
   populateConstellationFilter();
   populateSatFilter(null);
   populateBandFilter(null);
   const initial = currentFilters();
-  const initialA = stationDatasets(hostnameA, seriesA, STATION_STYLE[0], initial);
-  const initialB = stationDatasets(hostnameB, seriesB, STATION_STYLE[1], initial);
+  const initialHideArcPoints = !!document.getElementById("filter-hide-arc-points")?.checked;
+  const initialShowGroundTruth = !!document.getElementById("filter-show-ground-truth")?.checked;
+  const initialA = stationDatasets(hostnameA, seriesA, STATION_STYLE[0], initial, initialHideArcPoints);
+  const initialB = stationDatasets(hostnameB, seriesB, STATION_STYLE[1], initial, initialHideArcPoints);
 
-  // Explicit redraw pass so both smoothed lines stay visible through the
-  // combined point cloud of both stations, the same trick the
-  // single-station dashboard's RH chart uses (see redrawOnTop there).
+  // Explicit redraw pass so both smoothed lines (and the ground-truth
+  // overlay) stay visible through the combined point cloud of both
+  // stations, the same trick the single-station dashboard's RH chart
+  // uses (see redrawOnTop there).
   const redrawOnTop = {
     id: "redrawOnTop",
     afterDatasetsDraw(chart) {
       chart.data.datasets.forEach((ds, idx) => {
-        if (!SMOOTHED_LABELS.has(ds.label)) return;
+        if (!ON_TOP_LABELS.has(ds.label)) return;
         const meta = chart.getDatasetMeta(idx);
         if (!meta.hidden) meta.controller.draw();
       });
@@ -464,11 +510,21 @@ if (canvas) {
     compareChart.draw();
   });
 
+  // Same "scale to what the data actually spans, not a fixed 0-100"
+  // reasoning as the single-station dashboard's RH chart - real soil
+  // moisture here typically only covers a couple of percentage points at
+  // a time, which would look like a flat line pinned to the bottom of a
+  // full 0-100 axis.
+  const groundTruthVwcs = groundTruthSeries.map(p => p.vwc_percent).filter(v => v != null);
+  const gtMin = groundTruthVwcs.length ? Math.min(...groundTruthVwcs) : 0;
+  const gtMax = groundTruthVwcs.length ? Math.max(...groundTruthVwcs) : 100;
+  const gtPad = Math.max((gtMax - gtMin) * 0.15, 0.5);
+
   compareChart = new Chart(canvas, {
     type: "scatter",
     plugins: [redrawOnTop, crosshairPlugin],
     data: {
-      datasets: [...initialA.datasets, ...initialB.datasets],
+      datasets: [...initialA.datasets, ...initialB.datasets, ...groundTruthDataset(initialShowGroundTruth)],
     },
     options: {
       animation: false,
@@ -484,7 +540,7 @@ if (canvas) {
         if (!elements.length) return;
         const el = elements[0];
         const ds = chart.data.datasets[el.datasetIndex];
-        if (SMOOTHED_LABELS.has(ds.label)) return;
+        if (SMOOTHED_LABELS.has(ds.label) || ds.label === GROUND_TRUTH_LABEL) return;
         openArcDetail(ds.data[el.index]);
       },
       scales: {
@@ -497,6 +553,13 @@ if (canvas) {
           ticks: { autoSkip: true, maxTicksLimit: 12 },
         },
         y: { reverse: true, title: { display: true, text: "Reflector height (m)" } },
+        yGroundTruth: {
+          display: initialShowGroundTruth && groundTruthSeries.length > 0,
+          position: "right",
+          min: gtMin - gtPad, max: gtMax + gtPad,
+          title: { display: true, text: "Soil moisture (% VWC)" },
+          grid: { drawOnChartArea: false },
+        },
       },
       plugins: {
         legend: { position: "bottom" },
@@ -505,6 +568,11 @@ if (canvas) {
             label(context) {
               if (SMOOTHED_LABELS.has(context.dataset.label)) {
                 return `${context.dataset.label}: ${context.parsed.y.toFixed(2)} m`;
+              }
+              if (context.dataset.label === GROUND_TRUTH_LABEL) {
+                const p = context.raw;
+                const vwc = context.parsed.y == null ? "n/a (no calibration synced)" : `${context.parsed.y.toFixed(1)}%`;
+                return `Ground truth VWC: ${vwc} (raw ${p.moistureRaw}, soil ${p.soilTempC}°C) - not temperature-corrected`;
               }
               const p = context.raw;
               const base = `${context.dataset.label} (${p.system} sat ${p.sat}): RH ${p.y.toFixed(2)} m, Amp ${p.amplitude}, Pk/Noise ${p.peak2noise}`;
@@ -527,9 +595,16 @@ if (canvas) {
 
   function rebuildChart() {
     const filters = currentFilters();
-    const a = stationDatasets(hostnameA, seriesA, STATION_STYLE[0], filters);
-    const b = stationDatasets(hostnameB, seriesB, STATION_STYLE[1], filters);
-    compareChart.data.datasets = [...a.datasets, ...b.datasets];
+    const hideArcPoints = !!document.getElementById("filter-hide-arc-points")?.checked;
+    const showGroundTruth = !!document.getElementById("filter-show-ground-truth")?.checked;
+    const a = stationDatasets(hostnameA, seriesA, STATION_STYLE[0], filters, hideArcPoints);
+    const b = stationDatasets(hostnameB, seriesB, STATION_STYLE[1], filters, hideArcPoints);
+    compareChart.data.datasets = [...a.datasets, ...b.datasets, ...groundTruthDataset(showGroundTruth)];
+    // Not touched by data.datasets above - the axis's own display/range
+    // has to be updated explicitly, or toggling the checkbox back on
+    // after starting unchecked would add the dataset back with no visible
+    // axis for it (stuck at whatever "initialShowGroundTruth" produced).
+    compareChart.options.scales.yGroundTruth.display = showGroundTruth && groundTruthSeries.length > 0;
     compareChart.update();
 
     const hint = document.getElementById("filter-hint");
@@ -553,6 +628,10 @@ if (canvas) {
   document.getElementById("filter-az-width").addEventListener("input", rebuildChart);
   document.getElementById("filter-el-min").addEventListener("input", rebuildChart);
   document.getElementById("filter-el-max").addEventListener("input", rebuildChart);
+  document.getElementById("filter-hide-arc-points").addEventListener("change", rebuildChart);
+  // Only present when ground_truth_series is non-empty (see the
+  // conditional around its checkbox above).
+  document.getElementById("filter-show-ground-truth")?.addEventListener("change", rebuildChart);
 
   window.clearFilters = function () {
     document.getElementById("filter-constellation").value = "";
